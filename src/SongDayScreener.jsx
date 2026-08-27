@@ -189,7 +189,55 @@ function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
     for (let k = 0; k < NMAX; k++) { if (perDay[k] !== null && perDay[k] >= 1.0) { crossDay = k + 1; break; } }
     table[l] = { n: arr.length, freq: rows.length ? arr.length / rows.length : 0, target80ByDay: perDay, crossDay };
   }
-  return { nTotal: rows.length, table };
+
+  // Bảng gộp TOÀN BỘ mẫu (không chia bucket) — dùng làm phương án dự phòng khi
+  // 1 bucket cụ thể quá ít mẫu / thiếu dữ liệu ở ngày đó, để luôn tra ra được
+  // 1 con số target80 cụ thể thay vì để trống.
+  const overallPerDay = [];
+  for (let k = 0; k < NMAX; k++) {
+    const vals = rows.map((r) => r.extByDay[k]);
+    overallPerDay.push(vals.length ? percentile(vals, 20) : null);
+  }
+  let overallCrossDay = null;
+  for (let k = 0; k < NMAX; k++) { if (overallPerDay[k] !== null && overallPerDay[k] >= 1.0) { overallCrossDay = k + 1; break; } }
+  const overall = { n: rows.length, target80ByDay: overallPerDay, crossDay: overallCrossDay };
+
+  return { nTotal: rows.length, table, overall };
+}
+
+// Số mẫu tối thiểu để tin vào con số riêng của 1 bucket. Dưới ngưỡng này (hoặc
+// khi đúng ngày đó không có dữ liệu), hàm sẽ mở rộng tìm sang bucket lân cận
+// gần nhất, rồi mới rơi về bảng gộp toàn bộ mẫu — luôn trả ra 1 giá trị cụ thể
+// nếu cặp đó có dù chỉ 1 mẫu lịch sử hợp lệ ở phía Long/Short đang xét.
+const MIN_SAMPLES = 5;
+
+function resolveTarget80(bt, retr, dayIdx) {
+  const bucket = bucketOf(retr);
+  const bIdx = LABELS.indexOf(bucket);
+
+  const direct = bt.table[bucket];
+  if (direct && direct.n >= MIN_SAMPLES && direct.target80ByDay[dayIdx] !== null) {
+    return { ratio: direct.target80ByDay[dayIdx], source: "bucket", label: bucket, n: direct.n };
+  }
+
+  // mở rộng ra bucket lân cận gần nhất theo khoảng cách trên thang độ sâu hồi
+  const order = LABELS
+    .map((l, i) => ({ l, i, dist: Math.abs(i - bIdx) }))
+    .filter((x) => x.l !== bucket)
+    .sort((a, b) => a.dist - b.dist);
+  for (const { l } of order) {
+    const t = bt.table[l];
+    if (t && t.n >= MIN_SAMPLES && t.target80ByDay[dayIdx] !== null) {
+      return { ratio: t.target80ByDay[dayIdx], source: "neighbor", label: l, n: t.n };
+    }
+  }
+
+  // rơi về bảng gộp toàn bộ mẫu lịch sử (không chia bucket)
+  if (bt.overall && bt.overall.target80ByDay[dayIdx] !== null) {
+    return { ratio: bt.overall.target80ByDay[dayIdx], source: "overall", label: "toàn bộ mẫu", n: bt.overall.n };
+  }
+
+  return { ratio: null, source: "none", label: null, n: 0 };
 }
 
 // ============================================================================
@@ -224,7 +272,11 @@ function getCurrentPullback(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx) {
     let curMin = Infinity;
     for (let j = streakStart; j <= last; j++) curMin = Math.min(curMin, D[j].l);
     const retr = (peak - curMin) / impulse;
-    return { side, streak, retr, entryDate: D[streakStart].d, lastDate: D[last].d };
+    return {
+      side, streak, retr, impulse,
+      base: plow, // ratio 0% -> giá này (dùng để quy target% ra giá thực)
+      entryDate: D[streakStart].d, lastDate: D[last].d, lastClose: D[last].c,
+    };
   } else {
     const phigh = D[pIdx].h;
     let trough = Infinity;
@@ -234,8 +286,29 @@ function getCurrentPullback(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx) {
     let curMax = -Infinity;
     for (let j = streakStart; j <= last; j++) curMax = Math.max(curMax, D[j].h);
     const retr = (curMax - trough) / impulse;
-    return { side, streak, retr, entryDate: D[streakStart].d, lastDate: D[last].d };
+    return {
+      side, streak, retr, impulse,
+      base: phigh, // ratio 0% -> giá này (short đi từ đỉnh xuống nên base là đỉnh)
+      entryDate: D[streakStart].d, lastDate: D[last].d, lastClose: D[last].c,
+    };
   }
+}
+
+// Quy đổi 1 mức target% (thang impulse) ra GIÁ THỰC, theo đúng chiều Long/Short.
+// Long:  giá = base(đáy sóng đẩy) + ratio * impulse   (ratio tăng -> giá tăng)
+// Short: giá = base(đỉnh sóng đẩy) - ratio * impulse  (ratio tăng -> giá giảm)
+function ratioToPrice(ratio, cp) {
+  if (ratio === null || ratio === undefined) return null;
+  return cp.side === "long" ? cp.base + ratio * cp.impulse : cp.base - ratio * cp.impulse;
+}
+function priceDecimals(sym) {
+  if (sym.includes("JPY")) return 3;
+  if (sym.includes("BTC")) return 1;
+  return 5;
+}
+function fmtPrice(v, sym) {
+  if (v === null || v === undefined || !isFinite(v)) return "—";
+  return v.toFixed(priceDecimals(sym));
 }
 
 // ============================================================================
@@ -295,10 +368,19 @@ function PairCard({ item, open, onToggle }) {
   const bucket = bucketOf(cp.retr);
   const bd = bt.table[bucket];
   const curDayIdx = Math.min(NMAX - 1, cp.streak);
-  const quickTarget = bd ? bd.target80ByDay[curDayIdx] : null;
+
+  const resolved = resolveTarget80(bt, cp.retr, curDayIdx);
+  const quickTargetPrice = ratioToPrice(resolved.ratio, cp);
   const crossTxt = bd && bd.crossDay ? `${bd.crossDay} ngày` : `chưa đạt trong ${NMAX} ngày`;
   const sideColor = cp.side === "long" ? C.long : C.short;
   const sideSoft = cp.side === "long" ? C.longSoft : C.shortSoft;
+
+  const sourceNote = {
+    bucket: null,
+    neighbor: `ước tính từ bucket lân cận "${resolved.label}" (bucket "${bucket}" chỉ có ${bd ? bd.n : 0} mẫu, dưới ngưỡng tin cậy ${MIN_SAMPLES})`,
+    overall: `ước tính từ toàn bộ ${resolved.n} mẫu lịch sử của ${sym} (không tách theo mức hồi cụ thể, do dữ liệu riêng bucket "${bucket}" quá mỏng)`,
+    none: `chưa đủ dữ liệu lịch sử cho ${sym} theo chiều ${cp.side === "long" ? "Long" : "Short"}`,
+  }[resolved.source];
 
   return (
     <div
@@ -330,13 +412,40 @@ function PairCard({ item, open, onToggle }) {
 
       <ImpulseScale retr={cp.retr} side={cp.side} />
 
+      <div style={{ fontSize: 10, color: C.textFaint, marginTop: 2 }}>
+        Giá đóng cửa gần nhất: <b style={{ color: C.textDim }}>{fmtPrice(cp.lastClose, sym)}</b>
+      </div>
+
+      {/* TP 80% ngay lúc này — con số quan trọng nhất của card, luôn ghi ra 1 giá trị cụ thể */}
+      <div style={{
+        marginTop: 10, padding: "10px 11px", borderRadius: 10,
+        background: sideSoft, border: `1px solid ${sideColor}55`,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div>
+            <div style={{ fontSize: 10, color: C.textDim, letterSpacing: "0.02em" }}>
+              TP xác suất 80% <b style={{ color: C.text }}>ngay tại thời điểm hiện tại</b> (đã hồi {cp.streak} ngày)
+            </div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 700, color: sideColor, marginTop: 2 }}>
+              {resolved.ratio !== null ? fmtPrice(quickTargetPrice, sym) : "chưa đủ dữ liệu"}
+            </div>
+          </div>
+          {resolved.ratio !== null && (
+            <div style={{ textAlign: "right", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: C.textFaint }}>
+              {fmtPct(resolved.ratio)}<br />thang sóng đẩy
+            </div>
+          )}
+        </div>
+        {sourceNote && (
+          <div style={{ fontSize: 9.5, color: C.textFaint, marginTop: 6, lineHeight: 1.4 }}>⚠ {sourceNote}</div>
+        )}
+      </div>
+
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderSoft}` }}>
         <span style={{ fontSize: 11.5, color: C.textDim }}>
           Bucket lịch sử <b style={{ color: C.text }}>{bucket}</b> · n={bd ? bd.n : 0} · tần suất {bd ? fmtPct0(bd.freq) : "—"}
         </span>
-        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13.5, fontWeight: 600, color: sideColor }}>
-          {quickTarget !== null ? fmtPct(quickTarget) : "—"} @80%
-        </span>
+        <span style={{ fontSize: 11, color: C.textFaint }}>{open ? "thu gọn ▲" : "xem chi tiết ▾"}</span>
       </div>
 
       {open && (
@@ -351,25 +460,32 @@ function PairCard({ item, open, onToggle }) {
               <tr>
                 <th style={thStyle}>Ngày (từ lúc hồi)</th>
                 <th style={thStyle}>Target 80%</th>
+                <th style={thStyle}>Giá TP (80%)</th>
+                <th style={thStyle}>Nguồn</th>
               </tr>
             </thead>
             <tbody>
               {Array.from({ length: NMAX }).map((_, k) => {
-                const v = bd ? bd.target80ByDay[k] : null;
+                const r = resolveTarget80(bt, cp.retr, k);
+                const priceV = ratioToPrice(r.ratio, cp);
                 const isCur = k + 1 === Math.min(NMAX, cp.streak + 1);
+                const srcTag = { bucket: "bucket", neighbor: "lân cận", overall: "gộp", none: "—" }[r.source];
                 return (
                   <tr key={k} style={{ background: isCur ? C.amberSoft : "transparent" }}>
                     <td style={tdStyleLeft}>N{k + 1}</td>
-                    <td style={{ ...tdStyle, color: isCur ? C.amber : C.text, fontWeight: isCur ? 700 : 400 }}>{fmtPct(v)}</td>
+                    <td style={{ ...tdStyle, color: isCur ? C.amber : C.text, fontWeight: isCur ? 700 : 400 }}>{fmtPct(r.ratio)}</td>
+                    <td style={{ ...tdStyle, color: isCur ? C.amber : C.text, fontWeight: isCur ? 700 : 400 }}>{r.ratio !== null ? fmtPrice(priceV, sym) : "—"}</td>
+                    <td style={{ ...tdStyle, color: C.textFaint, fontSize: 10 }}>{srcTag}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
           <p style={{ fontSize: 11.5, color: C.textFaint, lineHeight: 1.55, marginTop: 10 }}>
-            <b style={{ color: C.textDim }}>Đọc bảng:</b> mỗi dòng là mức target (thang 0–100%+, 100% = đỉnh/đáy cũ trước khi hồi) mà lịch sử cho thấy{" "}
-            <b style={{ color: C.textDim }}>80% xác suất</b> giá đã đạt tới, tính lũy kế từ ngày bắt đầu hồi (N0), dựa trên toàn bộ lần "{bucket}" từng xảy ra ở
-            chính cặp {sym} khi D+W cùng chiều. Dòng vàng là mốc ngày hiện tại (đã hồi {cp.streak} ngày).
+            <b style={{ color: C.textDim }}>Đọc bảng:</b> cột % là target theo thang 0–100%+ (100% = đỉnh/đáy cũ trước khi hồi); cột giá quy đổi trực tiếp sang
+            giá thực dựa trên biên độ sóng đẩy hiện tại của {sym}. Cột "Nguồn" cho biết số liệu ngày đó lấy từ đúng bucket "{bucket}" (n={bd ? bd.n : 0}), hay
+            phải mở rộng sang bucket lân cận / gộp toàn bộ mẫu vì bucket riêng quá ít dữ liệu (dưới {MIN_SAMPLES} mẫu). Dòng vàng là mốc ngày hiện tại (đã hồi{" "}
+            {cp.streak} ngày) — đúng bằng ô "TP xác suất 80%" ở khung phía trên.
           </p>
         </div>
       )}
@@ -498,7 +614,7 @@ export default function SongDayScreener() {
             <div style={{ display: "flex", gap: 14, marginTop: 14, flexWrap: "wrap", fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, color: C.textFaint }}>
               <span><b style={{ color: C.textDim }}>{totalScanned}</b> cặp quét</span>
               <span><b style={{ color: C.textDim }}>{items.length}</b> cặp đang hồi thỏa điều kiện</span>
-              <span>Nguồn: cache D/W GitHub Action (Twelve Data)</span>
+              <span>Nguồn: cache D/W GitHub Action, tự quét lúc 5:00 sáng giờ VN mỗi ngày (Twelve Data)</span>
             </div>
           )}
         </header>
