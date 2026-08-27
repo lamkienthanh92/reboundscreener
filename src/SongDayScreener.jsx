@@ -73,8 +73,13 @@ function buildIndicators(bars) {
   const ema50 = ema(closes, 50);
   const rsi14 = rsi(closes, 14);
   const { line, signal } = macd(closes);
-  const up = closes.map((c, i) => c > ema50[i] && rsi14[i] !== null && rsi14[i] > 50 && line[i] > signal[i]);
-  const down = closes.map((c, i) => c < ema50[i] && rsi14[i] !== null && rsi14[i] < 50 && line[i] < signal[i]);
+  // Chỉ cần 1 trong 3 chỉ báo xác nhận là đủ (OR), không cần cả 3 đồng thuận (AND) như trước.
+  const up = closes.map((c, i) =>
+    c > ema50[i] || (rsi14[i] !== null && rsi14[i] > 50) || line[i] > signal[i]
+  );
+  const down = closes.map((c, i) =>
+    c < ema50[i] || (rsi14[i] !== null && rsi14[i] < 50) || line[i] < signal[i]
+  );
   return { up, down };
 }
 function mapWeeklyToDaily(dBars, wBars, wUp, wDown) {
@@ -375,11 +380,27 @@ function PairCard({ item, open, onToggle }) {
   const sideColor = cp.side === "long" ? C.long : C.short;
   const sideSoft = cp.side === "long" ? C.longSoft : C.shortSoft;
 
+  // QUAN TRỌNG: chỉ khi nguồn = "bucket" thì con số "80%" mới đúng nghĩa xác
+  // suất có điều kiện theo ĐÚNG mức hồi hiện tại. Khi phải mở rộng sang bucket
+  // lân cận hay gộp toàn bộ mẫu, đó là ước tính từ 1 nhóm tham chiếu RỘNG HƠN
+  // — không còn là "80% xác suất cho đúng tình huống đang xảy ra" nữa, nên
+  // không được gắn nhãn/màu như thể nó chắc chắn ngang nhau.
+  const isReliable = resolved.source === "bucket";
+  const headline = {
+    bucket: `TP xác suất 80% ngay tại thời điểm hiện tại (đã hồi ${cp.streak} ngày)`,
+    neighbor: `TP ước tính — không đủ mẫu ở đúng mức hồi ${bucket}, mở rộng sang mức "${resolved.label}"`,
+    overall: `TP ước tính thô — không đủ mẫu để tách theo mức hồi, dùng toàn bộ lịch sử ${sym}`,
+    none: `Chưa đủ dữ liệu lịch sử để ước tính`,
+  }[resolved.source];
+  const headlineColor = isReliable ? sideColor : C.amber;
+  const headlineBoxBg = isReliable ? sideSoft : C.amberSoft;
+  const headlineBoxBorder = isReliable ? `${sideColor}55` : `${C.amber}55`;
+
   const sourceNote = {
-    bucket: null,
-    neighbor: `ước tính từ bucket lân cận "${resolved.label}" (bucket "${bucket}" chỉ có ${bd ? bd.n : 0} mẫu, dưới ngưỡng tin cậy ${MIN_SAMPLES})`,
-    overall: `ước tính từ toàn bộ ${resolved.n} mẫu lịch sử của ${sym} (không tách theo mức hồi cụ thể, do dữ liệu riêng bucket "${bucket}" quá mỏng)`,
-    none: `chưa đủ dữ liệu lịch sử cho ${sym} theo chiều ${cp.side === "long" ? "Long" : "Short"}`,
+    bucket: `dựa trên đúng ${bd ? bd.n : 0} mẫu lịch sử từng hồi về mức "${bucket}" — số liệu 80% có điều kiện đúng theo tình huống hiện tại.`,
+    neighbor: `bucket "${bucket}" chỉ có ${bd ? bd.n : 0} mẫu (dưới ngưỡng tin cậy ${MIN_SAMPLES}) nên KHÔNG đủ để tính riêng — số trên lấy từ ${resolved.n} mẫu ở mức hồi lân cận "${resolved.label}", chỉ mang tính tham khảo, không phải xác suất 80% chính xác cho đúng mức hồi hiện tại.`,
+    overall: `bucket "${bucket}" quá ít mẫu (${bd ? bd.n : 0}) nên số trên gộp từ toàn bộ ${resolved.n} mẫu lịch sử của ${sym} (mọi mức hồi), KHÔNG có điều kiện theo đúng mức hồi hiện tại — độ tin cậy thấp hơn nhiều so với khi lấy đúng bucket.`,
+    none: `${sym} chưa từng ghi nhận đủ mẫu D+W cùng chiều + hồi ở chiều ${cp.side === "long" ? "Long" : "Short"} trong lịch sử — không có cơ sở để ước tính.`,
   }[resolved.source];
 
   return (
@@ -416,18 +437,18 @@ function PairCard({ item, open, onToggle }) {
         Giá đóng cửa gần nhất: <b style={{ color: C.textDim }}>{fmtPrice(cp.lastClose, sym)}</b>
       </div>
 
-      {/* TP 80% ngay lúc này — con số quan trọng nhất của card, luôn ghi ra 1 giá trị cụ thể */}
+      {/* TP — con số quan trọng nhất của card. Nhãn/màu đổi theo độ tin cậy thật:
+          chỉ "xanh/đỏ + xác suất 80%" khi có đủ mẫu ĐÚNG bucket, còn lại là ước
+          tính (màu vàng cảnh báo) — không đánh đồng 2 loại này làm 1. */}
       <div style={{
         marginTop: 10, padding: "10px 11px", borderRadius: 10,
-        background: sideSoft, border: `1px solid ${sideColor}55`,
+        background: headlineBoxBg, border: `1px solid ${headlineBoxBorder}`,
       }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
           <div>
-            <div style={{ fontSize: 10, color: C.textDim, letterSpacing: "0.02em" }}>
-              TP xác suất 80% <b style={{ color: C.text }}>ngay tại thời điểm hiện tại</b> (đã hồi {cp.streak} ngày)
-            </div>
-            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 700, color: sideColor, marginTop: 2 }}>
-              {resolved.ratio !== null ? fmtPrice(quickTargetPrice, sym) : "chưa đủ dữ liệu"}
+            <div style={{ fontSize: 10, color: C.textDim, letterSpacing: "0.02em" }}>{headline}</div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 700, color: headlineColor, marginTop: 2 }}>
+              {resolved.ratio !== null ? fmtPrice(quickTargetPrice, sym) : "—"}
             </div>
           </div>
           {resolved.ratio !== null && (
@@ -436,9 +457,9 @@ function PairCard({ item, open, onToggle }) {
             </div>
           )}
         </div>
-        {sourceNote && (
-          <div style={{ fontSize: 9.5, color: C.textFaint, marginTop: 6, lineHeight: 1.4 }}>⚠ {sourceNote}</div>
-        )}
+        <div style={{ fontSize: 9.5, color: isReliable ? C.textFaint : C.amber, marginTop: 6, lineHeight: 1.4 }}>
+          {isReliable ? "✓ " : "⚠ "}{sourceNote}
+        </div>
       </div>
 
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderSoft}` }}>
@@ -459,9 +480,9 @@ function PairCard({ item, open, onToggle }) {
             <thead>
               <tr>
                 <th style={thStyle}>Ngày (từ lúc hồi)</th>
-                <th style={thStyle}>Target 80%</th>
-                <th style={thStyle}>Giá TP (80%)</th>
-                <th style={thStyle}>Nguồn</th>
+                <th style={thStyle}>Target</th>
+                <th style={thStyle}>Giá TP</th>
+                <th style={thStyle}>Độ tin cậy</th>
               </tr>
             </thead>
             <tbody>
@@ -469,13 +490,15 @@ function PairCard({ item, open, onToggle }) {
                 const r = resolveTarget80(bt, cp.retr, k);
                 const priceV = ratioToPrice(r.ratio, cp);
                 const isCur = k + 1 === Math.min(NMAX, cp.streak + 1);
-                const srcTag = { bucket: "bucket", neighbor: "lân cận", overall: "gộp", none: "—" }[r.source];
+                const rowReliable = r.source === "bucket";
+                const srcTag = { bucket: "80% ✓", neighbor: "ước tính", overall: "ước tính thô", none: "—" }[r.source];
+                const rowColor = !rowReliable ? C.amber : (isCur ? C.amber : C.text);
                 return (
                   <tr key={k} style={{ background: isCur ? C.amberSoft : "transparent" }}>
                     <td style={tdStyleLeft}>N{k + 1}</td>
-                    <td style={{ ...tdStyle, color: isCur ? C.amber : C.text, fontWeight: isCur ? 700 : 400 }}>{fmtPct(r.ratio)}</td>
-                    <td style={{ ...tdStyle, color: isCur ? C.amber : C.text, fontWeight: isCur ? 700 : 400 }}>{r.ratio !== null ? fmtPrice(priceV, sym) : "—"}</td>
-                    <td style={{ ...tdStyle, color: C.textFaint, fontSize: 10 }}>{srcTag}</td>
+                    <td style={{ ...tdStyle, color: rowColor, fontWeight: isCur ? 700 : 400 }}>{fmtPct(r.ratio)}</td>
+                    <td style={{ ...tdStyle, color: rowColor, fontWeight: isCur ? 700 : 400 }}>{r.ratio !== null ? fmtPrice(priceV, sym) : "—"}</td>
+                    <td style={{ ...tdStyle, color: rowReliable ? C.textFaint : C.amber, fontSize: 10 }}>{srcTag}</td>
                   </tr>
                 );
               })}
@@ -483,9 +506,11 @@ function PairCard({ item, open, onToggle }) {
           </table>
           <p style={{ fontSize: 11.5, color: C.textFaint, lineHeight: 1.55, marginTop: 10 }}>
             <b style={{ color: C.textDim }}>Đọc bảng:</b> cột % là target theo thang 0–100%+ (100% = đỉnh/đáy cũ trước khi hồi); cột giá quy đổi trực tiếp sang
-            giá thực dựa trên biên độ sóng đẩy hiện tại của {sym}. Cột "Nguồn" cho biết số liệu ngày đó lấy từ đúng bucket "{bucket}" (n={bd ? bd.n : 0}), hay
-            phải mở rộng sang bucket lân cận / gộp toàn bộ mẫu vì bucket riêng quá ít dữ liệu (dưới {MIN_SAMPLES} mẫu). Dòng vàng là mốc ngày hiện tại (đã hồi{" "}
-            {cp.streak} ngày) — đúng bằng ô "TP xác suất 80%" ở khung phía trên.
+            giá thực dựa trên biên độ sóng đẩy hiện tại của {sym}. Cột <b style={{ color: C.textDim }}>"Độ tin cậy"</b> phân biệt rõ 2 loại số:{" "}
+            <b style={{ color: C.text }}>"80% ✓"</b> (chữ trắng) nghĩa là đủ mẫu đúng bucket "{bucket}" (n={bd ? bd.n : 0}) — con số 80% có điều kiện đúng theo
+            mức hồi hiện tại; còn <b style={{ color: C.amber }}>"ước tính" / "ước tính thô"</b> (chữ vàng) nghĩa là bucket này không đủ mẫu, phải lấy từ bucket
+            lân cận hoặc gộp toàn bộ lịch sử — <b>không còn là xác suất 80% chính xác cho đúng tình huống đang xảy ra</b>, chỉ mang tính tham khảo. Dòng nền
+            vàng là mốc ngày hiện tại (đã hồi {cp.streak} ngày) — đúng bằng ô TP ở khung phía trên.
           </p>
         </div>
       )}
@@ -606,7 +631,8 @@ export default function SongDayScreener() {
           <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 26, fontWeight: 700, letterSpacing: "-0.01em", margin: "6px 0 4px" }}>Sóng Đẩy</h1>
           <p style={{ color: C.textDim, fontSize: 13.5, lineHeight: 1.5, maxWidth: "56ch", margin: 0 }}>
             Quét <b style={{ color: C.text }}>22 cặp</b> (chính, chéo, phụ, crypto) tìm những cặp đang{" "}
-            <b style={{ color: C.text }}>Daily &amp; Weekly cùng chiều</b> và <b style={{ color: C.text }}>nến hiện tại đang hồi ngược</b> — rồi tra lại xác
+            <b style={{ color: C.text }}>Daily &amp; Weekly cùng chiều</b> (chỉ cần 1 trong 3 chỉ báo: EMA50/RSI14/MACD) và{" "}
+            <b style={{ color: C.text }}>nến hiện tại đang hồi ngược</b> — rồi tra lại xác
             suất lịch sử của chính cặp đó: hồi bao sâu, đạt lại target với xác suất 80% trong bao nhiêu ngày.
           </p>
 
@@ -678,7 +704,8 @@ export default function SongDayScreener() {
 
         {status === "ready" && (
           <div style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
-            Phương pháp: xu hướng D/W xác nhận bằng Close so EMA50, RSI14 và MACD(12,26,9); "hồi" là chuỗi nến ngược màu liên tiếp kể từ nến đảo chiều gần nhất;
+            Phương pháp: xu hướng D/W xác nhận khi <b>≥1 trong 3</b> chỉ báo đồng thuận (Close so EMA50, RSI14 &gt;/&lt; 50, MACD(12,26,9) cắt Signal) — không cần
+            cả 3 cùng lúc; "hồi" là chuỗi nến ngược màu liên tiếp kể từ nến đảo chiều gần nhất;
             biên độ sóng đẩy đo từ swing-pivot 3-nến gần nhất tới đỉnh/đáy trước khi hồi. Target 80% = percentile 20 của phân phối mở rộng lũy kế trong lịch sử
             của chính từng cặp, theo từng mức hồi đã chạm. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.
           </div>

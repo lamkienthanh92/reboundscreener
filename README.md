@@ -62,8 +62,11 @@ với repo gốc `fx-cmt-app`.
 
 ## Phương pháp tính (tóm tắt)
 
-- **Xu hướng D/W**: Close so với EMA50, RSI14 > 50 (tăng) / < 50 (giảm), và
-  MACD(12,26,9) cùng chiều.
+- **Xu hướng D/W**: chỉ cần **1 trong 3** chỉ báo xác nhận là đủ (không cần
+  cả 3 đồng thuận cùng lúc):
+  - Close so với EMA50, hoặc
+  - RSI14 > 50 (tăng) / < 50 (giảm), hoặc
+  - MACD(12,26,9) cùng chiều so với đường Signal.
 - **"Hồi"**: chuỗi nến ngược màu liên tiếp tính từ ngày nến đảo chiều gần
   nhất trong xu hướng đang xác nhận.
 - **Sóng đẩy (impulse)**: đo từ swing-pivot 3-nến gần nhất tới đỉnh/đáy ngay
