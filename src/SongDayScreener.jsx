@@ -21,13 +21,6 @@ const CAT_ORDER = ["Chính", "Chéo", "Phụ", "Crypto/Hàng hóa"];
 const NMAX = 10;
 const LOOKBACK = 40;
 const PIVWIN = 3;
-const BINS = [-1, 0.1, 0.2, 0.3, 0.4, 0.5, 1e9];
-const LABELS = ["<10%", "10-20%", "20-30%", "30-40%", "40-50%", ">=50%"];
-
-function bucketOf(v) {
-  for (let k = 0; k < BINS.length - 1; k++) if (v >= BINS[k] && v < BINS[k + 1]) return LABELS[k];
-  return LABELS[LABELS.length - 1];
-}
 
 // ============================================================================
 // INDICATORS
@@ -119,7 +112,10 @@ function percentile(arr, p) {
 }
 
 // ============================================================================
-// BACKTEST: historical bucket -> target80-by-day mapping, per symbol+side
+// BACKTEST: với mỗi cặp+chiều, tính thẳng target80 theo từng ngày N=1..10,
+// gộp TOÀN BỘ các lần lịch sử từng khớp mẫu hình (D+W cùng chiều + đang hồi)
+// — không chia nhỏ theo bucket độ sâu hồi. Đúng yêu cầu gốc: "trong N ngày,
+// 80% trường hợp trong quá khứ giá đã tăng/giảm đến ngưỡng nào".
 // ============================================================================
 function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
   const cand = [];
@@ -128,7 +124,7 @@ function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
     else { if (dDown[i] && wDownM[i] && D[i].c > D[i].o) cand.push(i); }
   }
   const pivArr = side === "long" ? lowIdx : highIdx;
-  const rows = [];
+  const extByDayRows = [];
   for (const i of cand) {
     let pIdx = -1;
     for (let p = pivArr.length - 1; p >= 0; p--) {
@@ -146,14 +142,14 @@ function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
       for (let j = pIdx; j < i; j++) peak = Math.max(peak, D[j].h);
       impulse = peak - plow;
       if (impulse <= 0) continue;
-      base = { plow, peak };
+      base = plow;
     } else {
       const phigh = D[pIdx].h;
       let trough = Infinity;
       for (let j = pIdx; j < i; j++) trough = Math.min(trough, D[j].l);
       impulse = phigh - trough;
       if (impulse <= 0) continue;
-      base = { phigh, trough };
+      base = phigh;
     }
 
     const extByDay = [];
@@ -162,87 +158,22 @@ function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
       const idx = i + k;
       cumMin = Math.min(cumMin, D[idx].l);
       cumMax = Math.max(cumMax, D[idx].h);
-      extByDay.push(side === "long" ? (cumMax - base.plow) / impulse : (base.phigh - cumMin) / impulse);
+      extByDay.push(side === "long" ? (cumMax - base) / impulse : (base - cumMin) / impulse);
     }
-
-    let finalRetr;
-    if (side === "long") {
-      let finalMin = Infinity;
-      for (let k = 0; k <= NMAX; k++) finalMin = Math.min(finalMin, D[i + k].l);
-      finalRetr = (base.peak - finalMin) / impulse;
-    } else {
-      let finalMax = -Infinity;
-      for (let k = 0; k <= NMAX; k++) finalMax = Math.max(finalMax, D[i + k].h);
-      finalRetr = (finalMax - base.trough) / impulse;
-    }
-    rows.push({ finalRetr, extByDay });
+    extByDayRows.push(extByDay);
   }
 
-  const buckets = {};
-  for (const l of LABELS) buckets[l] = [];
-  for (const r of rows) buckets[bucketOf(r.finalRetr)].push(r);
-
-  const table = {};
-  for (const l of LABELS) {
-    const arr = buckets[l];
-    const perDay = [];
-    for (let k = 0; k < NMAX; k++) {
-      const vals = arr.map((r) => r.extByDay[k]);
-      perDay.push(vals.length ? percentile(vals, 20) : null);
-    }
-    let crossDay = null;
-    for (let k = 0; k < NMAX; k++) { if (perDay[k] !== null && perDay[k] >= 1.0) { crossDay = k + 1; break; } }
-    table[l] = { n: arr.length, freq: rows.length ? arr.length / rows.length : 0, target80ByDay: perDay, crossDay };
-  }
-
-  // Bảng gộp TOÀN BỘ mẫu (không chia bucket) — dùng làm phương án dự phòng khi
-  // 1 bucket cụ thể quá ít mẫu / thiếu dữ liệu ở ngày đó, để luôn tra ra được
-  // 1 con số target80 cụ thể thay vì để trống.
-  const overallPerDay = [];
+  // Target80ByDay[k] = mức mà 80% xác suất giá ĐÃ đạt tới (percentile thứ 20
+  // của phân phối, vì "đạt >= V với xác suất 80%" <=> V = percentile 20).
+  const target80ByDay = [];
   for (let k = 0; k < NMAX; k++) {
-    const vals = rows.map((r) => r.extByDay[k]);
-    overallPerDay.push(vals.length ? percentile(vals, 20) : null);
+    const vals = extByDayRows.map((r) => r[k]);
+    target80ByDay.push(vals.length ? percentile(vals, 20) : null);
   }
-  let overallCrossDay = null;
-  for (let k = 0; k < NMAX; k++) { if (overallPerDay[k] !== null && overallPerDay[k] >= 1.0) { overallCrossDay = k + 1; break; } }
-  const overall = { n: rows.length, target80ByDay: overallPerDay, crossDay: overallCrossDay };
+  let crossDay = null;
+  for (let k = 0; k < NMAX; k++) { if (target80ByDay[k] !== null && target80ByDay[k] >= 1.0) { crossDay = k + 1; break; } }
 
-  return { nTotal: rows.length, table, overall };
-}
-
-// Số mẫu tối thiểu để tin vào con số riêng của 1 bucket. Dưới ngưỡng này (hoặc
-// khi đúng ngày đó không có dữ liệu), hàm sẽ mở rộng tìm sang bucket lân cận
-// gần nhất, rồi mới rơi về bảng gộp toàn bộ mẫu — luôn trả ra 1 giá trị cụ thể
-// nếu cặp đó có dù chỉ 1 mẫu lịch sử hợp lệ ở phía Long/Short đang xét.
-const MIN_SAMPLES = 5;
-
-function resolveTarget80(bt, retr, dayIdx) {
-  const bucket = bucketOf(retr);
-  const bIdx = LABELS.indexOf(bucket);
-
-  const direct = bt.table[bucket];
-  if (direct && direct.n >= MIN_SAMPLES && direct.target80ByDay[dayIdx] !== null) {
-    return { ratio: direct.target80ByDay[dayIdx], source: "bucket", label: bucket, n: direct.n };
-  }
-
-  // mở rộng ra bucket lân cận gần nhất theo khoảng cách trên thang độ sâu hồi
-  const order = LABELS
-    .map((l, i) => ({ l, i, dist: Math.abs(i - bIdx) }))
-    .filter((x) => x.l !== bucket)
-    .sort((a, b) => a.dist - b.dist);
-  for (const { l } of order) {
-    const t = bt.table[l];
-    if (t && t.n >= MIN_SAMPLES && t.target80ByDay[dayIdx] !== null) {
-      return { ratio: t.target80ByDay[dayIdx], source: "neighbor", label: l, n: t.n };
-    }
-  }
-
-  // rơi về bảng gộp toàn bộ mẫu lịch sử (không chia bucket)
-  if (bt.overall && bt.overall.target80ByDay[dayIdx] !== null) {
-    return { ratio: bt.overall.target80ByDay[dayIdx], source: "overall", label: "toàn bộ mẫu", n: bt.overall.n };
-  }
-
-  return { ratio: null, source: "none", label: null, n: 0 };
+  return { n: extByDayRows.length, target80ByDay, crossDay };
 }
 
 // ============================================================================
@@ -370,38 +301,12 @@ function ImpulseScale({ retr, side }) {
 // ============================================================================
 function PairCard({ item, open, onToggle }) {
   const { sym, cp, bt } = item;
-  const bucket = bucketOf(cp.retr);
-  const bd = bt.table[bucket];
-  const curDayIdx = Math.min(NMAX - 1, cp.streak);
-
-  const resolved = resolveTarget80(bt, cp.retr, curDayIdx);
-  const quickTargetPrice = ratioToPrice(resolved.ratio, cp);
-  const crossTxt = bd && bd.crossDay ? `${bd.crossDay} ngày` : `chưa đạt trong ${NMAX} ngày`;
   const sideColor = cp.side === "long" ? C.long : C.short;
   const sideSoft = cp.side === "long" ? C.longSoft : C.shortSoft;
+  const crossTxt = bt.crossDay ? `${bt.crossDay} ngày` : `chưa đạt trong ${NMAX} ngày`;
 
-  // QUAN TRỌNG: chỉ khi nguồn = "bucket" thì con số "80%" mới đúng nghĩa xác
-  // suất có điều kiện theo ĐÚNG mức hồi hiện tại. Khi phải mở rộng sang bucket
-  // lân cận hay gộp toàn bộ mẫu, đó là ước tính từ 1 nhóm tham chiếu RỘNG HƠN
-  // — không còn là "80% xác suất cho đúng tình huống đang xảy ra" nữa, nên
-  // không được gắn nhãn/màu như thể nó chắc chắn ngang nhau.
-  const isReliable = resolved.source === "bucket";
-  const headline = {
-    bucket: `TP xác suất 80% ngay tại thời điểm hiện tại (đã hồi ${cp.streak} ngày)`,
-    neighbor: `TP ước tính — không đủ mẫu ở đúng mức hồi ${bucket}, mở rộng sang mức "${resolved.label}"`,
-    overall: `TP ước tính thô — không đủ mẫu để tách theo mức hồi, dùng toàn bộ lịch sử ${sym}`,
-    none: `Chưa đủ dữ liệu lịch sử để ước tính`,
-  }[resolved.source];
-  const headlineColor = isReliable ? sideColor : C.amber;
-  const headlineBoxBg = isReliable ? sideSoft : C.amberSoft;
-  const headlineBoxBorder = isReliable ? `${sideColor}55` : `${C.amber}55`;
-
-  const sourceNote = {
-    bucket: `dựa trên đúng ${bd ? bd.n : 0} mẫu lịch sử từng hồi về mức "${bucket}" — số liệu 80% có điều kiện đúng theo tình huống hiện tại.`,
-    neighbor: `bucket "${bucket}" chỉ có ${bd ? bd.n : 0} mẫu (dưới ngưỡng tin cậy ${MIN_SAMPLES}) nên KHÔNG đủ để tính riêng — số trên lấy từ ${resolved.n} mẫu ở mức hồi lân cận "${resolved.label}", chỉ mang tính tham khảo, không phải xác suất 80% chính xác cho đúng mức hồi hiện tại.`,
-    overall: `bucket "${bucket}" quá ít mẫu (${bd ? bd.n : 0}) nên số trên gộp từ toàn bộ ${resolved.n} mẫu lịch sử của ${sym} (mọi mức hồi), KHÔNG có điều kiện theo đúng mức hồi hiện tại — độ tin cậy thấp hơn nhiều so với khi lấy đúng bucket.`,
-    none: `${sym} chưa từng ghi nhận đủ mẫu D+W cùng chiều + hồi ở chiều ${cp.side === "long" ? "Long" : "Short"} trong lịch sử — không có cơ sở để ước tính.`,
-  }[resolved.source];
+  // 3 mốc chính người dùng quan tâm: 2 / 3 / 4 ngày kể từ lúc bắt đầu hồi (N0)
+  const highlightDays = [2, 3, 4];
 
   return (
     <div
@@ -434,83 +339,69 @@ function PairCard({ item, open, onToggle }) {
       <ImpulseScale retr={cp.retr} side={cp.side} />
 
       <div style={{ fontSize: 10, color: C.textFaint, marginTop: 2 }}>
-        Giá đóng cửa gần nhất: <b style={{ color: C.textDim }}>{fmtPrice(cp.lastClose, sym)}</b>
+        Giá đóng cửa gần nhất: <b style={{ color: C.textDim }}>{fmtPrice(cp.lastClose, sym)}</b> · dựa trên{" "}
+        <b style={{ color: C.textDim }}>{bt.n}</b> lần mẫu hình này từng xảy ra trong lịch sử {sym}
       </div>
 
-      {/* TP — con số quan trọng nhất của card. Nhãn/màu đổi theo độ tin cậy thật:
-          chỉ "xanh/đỏ + xác suất 80%" khi có đủ mẫu ĐÚNG bucket, còn lại là ước
-          tính (màu vàng cảnh báo) — không đánh đồng 2 loại này làm 1. */}
-      <div style={{
-        marginTop: 10, padding: "10px 11px", borderRadius: 10,
-        background: headlineBoxBg, border: `1px solid ${headlineBoxBorder}`,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-          <div>
-            <div style={{ fontSize: 10, color: C.textDim, letterSpacing: "0.02em" }}>{headline}</div>
-            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 700, color: headlineColor, marginTop: 2 }}>
-              {resolved.ratio !== null ? fmtPrice(quickTargetPrice, sym) : "—"}
+      {/* TP 80% cho 2 / 3 / 4 ngày — đúng yêu cầu gốc: trong N ngày, 80% trường
+          hợp lịch sử giá đã đạt tới mức nào. Tính gộp trên toàn bộ mẫu, không
+          chia theo bucket độ sâu hồi. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginTop: 10 }}>
+        {highlightDays.map((d) => {
+          const ratio = bt.target80ByDay[d - 1];
+          const price = ratioToPrice(ratio, cp);
+          return (
+            <div key={d} style={{ background: sideSoft, border: `1px solid ${sideColor}55`, borderRadius: 10, padding: "8px 9px", textAlign: "center" }}>
+              <div style={{ fontSize: 9.5, color: C.textDim, letterSpacing: "0.02em" }}>TP 80% · {d} ngày</div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: sideColor, marginTop: 3 }}>
+                {ratio !== null ? fmtPrice(price, sym) : "—"}
+              </div>
             </div>
-          </div>
-          {resolved.ratio !== null && (
-            <div style={{ textAlign: "right", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: C.textFaint }}>
-              {fmtPct(resolved.ratio)}<br />thang sóng đẩy
-            </div>
-          )}
-        </div>
-        <div style={{ fontSize: 9.5, color: isReliable ? C.textFaint : C.amber, marginTop: 6, lineHeight: 1.4 }}>
-          {isReliable ? "✓ " : "⚠ "}{sourceNote}
-        </div>
+          );
+        })}
       </div>
 
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.borderSoft}` }}>
         <span style={{ fontSize: 11.5, color: C.textDim }}>
-          Bucket lịch sử <b style={{ color: C.text }}>{bucket}</b> · n={bd ? bd.n : 0} · tần suất {bd ? fmtPct0(bd.freq) : "—"}
+          Đáy/đỉnh hồi chạm <b style={{ color: C.text }}>{fmtPct(cp.retr)}</b> biên độ sóng đẩy
         </span>
         <span style={{ fontSize: 11, color: C.textFaint }}>{open ? "thu gọn ▲" : "xem chi tiết ▾"}</span>
       </div>
 
       {open && (
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.borderSoft}` }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 14 }}>
-            <StatBox k="Đáy/đỉnh hồi chạm" v={fmtPct(cp.retr)} />
-            <StatBox k="Mẫu lịch sử (n)" v={bd ? bd.n : 0} />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 14 }}>
+            <StatBox k="Mẫu lịch sử (n)" v={bt.n} />
             <StatBox k="Ngày đạt lại 100%" v={crossTxt} />
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5 }}>
             <thead>
               <tr>
                 <th style={thStyle}>Ngày (từ lúc hồi)</th>
-                <th style={thStyle}>Target</th>
-                <th style={thStyle}>Giá TP</th>
-                <th style={thStyle}>Độ tin cậy</th>
+                <th style={thStyle}>Target 80%</th>
+                <th style={thStyle}>Giá TP (80%)</th>
               </tr>
             </thead>
             <tbody>
               {Array.from({ length: NMAX }).map((_, k) => {
-                const r = resolveTarget80(bt, cp.retr, k);
-                const priceV = ratioToPrice(r.ratio, cp);
+                const ratio = bt.target80ByDay[k];
+                const priceV = ratioToPrice(ratio, cp);
                 const isCur = k + 1 === Math.min(NMAX, cp.streak + 1);
-                const rowReliable = r.source === "bucket";
-                const srcTag = { bucket: "80% ✓", neighbor: "ước tính", overall: "ước tính thô", none: "—" }[r.source];
-                const rowColor = !rowReliable ? C.amber : (isCur ? C.amber : C.text);
                 return (
                   <tr key={k} style={{ background: isCur ? C.amberSoft : "transparent" }}>
                     <td style={tdStyleLeft}>N{k + 1}</td>
-                    <td style={{ ...tdStyle, color: rowColor, fontWeight: isCur ? 700 : 400 }}>{fmtPct(r.ratio)}</td>
-                    <td style={{ ...tdStyle, color: rowColor, fontWeight: isCur ? 700 : 400 }}>{r.ratio !== null ? fmtPrice(priceV, sym) : "—"}</td>
-                    <td style={{ ...tdStyle, color: rowReliable ? C.textFaint : C.amber, fontSize: 10 }}>{srcTag}</td>
+                    <td style={{ ...tdStyle, color: isCur ? C.amber : C.text, fontWeight: isCur ? 700 : 400 }}>{fmtPct(ratio)}</td>
+                    <td style={{ ...tdStyle, color: isCur ? C.amber : C.text, fontWeight: isCur ? 700 : 400 }}>{ratio !== null ? fmtPrice(priceV, sym) : "—"}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
           <p style={{ fontSize: 11.5, color: C.textFaint, lineHeight: 1.55, marginTop: 10 }}>
-            <b style={{ color: C.textDim }}>Đọc bảng:</b> cột % là target theo thang 0–100%+ (100% = đỉnh/đáy cũ trước khi hồi); cột giá quy đổi trực tiếp sang
-            giá thực dựa trên biên độ sóng đẩy hiện tại của {sym}. Cột <b style={{ color: C.textDim }}>"Độ tin cậy"</b> phân biệt rõ 2 loại số:{" "}
-            <b style={{ color: C.text }}>"80% ✓"</b> (chữ trắng) nghĩa là đủ mẫu đúng bucket "{bucket}" (n={bd ? bd.n : 0}) — con số 80% có điều kiện đúng theo
-            mức hồi hiện tại; còn <b style={{ color: C.amber }}>"ước tính" / "ước tính thô"</b> (chữ vàng) nghĩa là bucket này không đủ mẫu, phải lấy từ bucket
-            lân cận hoặc gộp toàn bộ lịch sử — <b>không còn là xác suất 80% chính xác cho đúng tình huống đang xảy ra</b>, chỉ mang tính tham khảo. Dòng nền
-            vàng là mốc ngày hiện tại (đã hồi {cp.streak} ngày) — đúng bằng ô TP ở khung phía trên.
+            <b style={{ color: C.textDim }}>Đọc bảng:</b> mỗi dòng Nk là "trong k ngày kể từ lúc bắt đầu hồi, 80% trường hợp trong lịch sử giá đã đạt tới mức
+            này" — tính trên toàn bộ <b style={{ color: C.textDim }}>{bt.n}</b> lần cặp {sym} từng có D+W cùng chiều rồi hồi (không tách theo mức hồi sâu/nông
+            hiện tại). Cột % theo thang 0–100%+ (100% = đỉnh/đáy cũ trước khi hồi); cột giá quy đổi sang giá thực dựa trên biên độ sóng đẩy hiện tại. Dòng nền
+            vàng là mốc ngày hiện tại (đã hồi {cp.streak} ngày).
           </p>
         </div>
       )}

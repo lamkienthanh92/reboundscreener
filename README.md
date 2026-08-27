@@ -1,10 +1,10 @@
 # Sóng Đẩy — Bộ lọc hồi kỹ thuật D+W
 
-App React (Vite) quét 22 cặp FX/crypto, lọc ra những cặp đang **Daily & Weekly
-cùng chiều xu hướng** (EMA50 + RSI14 + MACD) **và** nến hiện tại đang hồi
-ngược màu — rồi backtest lại chính lịch sử của từng cặp đó để trả lời:
-hồi bao sâu, và với xác suất 80% giá sẽ đạt lại target ở mức nào, trong bao
-nhiêu ngày.
+Apps React (Vite) quét 22 cặp FX/crypto, lọc ra những cặp đang **Daily & Weekly
+cùng chiều xu hướng** (≥1 trong 3 chỉ báo: EMA50 / RSI14 / MACD) **và** nến
+hiện tại đang hồi ngược màu — rồi backtest lại chính lịch sử của từng cặp đó
+để trả lời: trong 2/3/4 ngày kể từ lúc hồi, 80% trường hợp trong quá khứ giá
+đã đạt tới mức nào.
 
 ## Chạy thử ngay (cách nhanh nhất)
 
@@ -71,17 +71,18 @@ với repo gốc `fx-cmt-app`.
   nhất trong xu hướng đang xác nhận.
 - **Sóng đẩy (impulse)**: đo từ swing-pivot 3-nến gần nhất tới đỉnh/đáy ngay
   trước khi hồi.
-- **Bucket độ sâu hồi**: `<10% / 10-20% / 20-30% / 30-40% / 40-50% / ≥50%`
-  biên độ sóng đẩy.
-- **Target 80%**: percentile thứ 20 của phân phối mức mở rộng lũy kế
-  (0% = đáy sóng đẩy, 100% = đỉnh/đáy cũ trước khi hồi), tính riêng theo
-  từng bucket, từng cặp, từng chiều Long/Short — dựa trên **toàn bộ lịch sử
-  ~2500 phiên** (khoảng 9-10 năm) của chính cặp đó.
-- **Giá TP thực tế**: mỗi card hiển thị thẳng ô "TP xác suất 80% ngay tại
-  thời điểm hiện tại" quy đổi từ % thang sóng đẩy sang **giá cụ thể** (dựa
-  trên đáy/đỉnh sóng đẩy + biên độ hiện tại của chính cặp đó), không chỉ số
-  % trừu tượng. Bảng chi tiết (bấm vào card) liệt kê giá TP80 cho từng ngày
-  N1–N10 kể từ lúc bắt đầu hồi.
+- **Target 80%**: với mỗi cặp + mỗi chiều Long/Short, gộp **toàn bộ lịch sử**
+  các lần từng khớp đúng mẫu hình này (D+W cùng chiều rồi hồi — thường vài
+  trăm lần trên ~9-10 năm dữ liệu), rồi với mỗi mốc N ngày kể từ lúc bắt đầu
+  hồi (N1…N10), tính percentile thứ 20 của mức mở rộng lũy kế đạt được. Percentile
+  20 tương đương: **80% số lần trong lịch sử, giá đã đạt tới mức này trong N
+  ngày đó** — đúng câu hỏi gốc "trong N ngày, 80% trường hợp giá đạt đến
+  ngưỡng nào". Không tách nhỏ theo mức hồi sâu/nông hiện tại — dùng chung 1
+  con số cho mỗi N, tính trên toàn bộ mẫu, cho chắc cỡ mẫu đủ lớn.
+- **Giá TP thực tế**: mỗi card hiển thị thẳng 3 ô TP80 cho **2 / 3 / 4 ngày**,
+  quy đổi từ % thang sóng đẩy sang **giá cụ thể** (dựa trên đáy/đỉnh sóng đẩy
+  hiện tại của chính cặp đó), không chỉ số % trừu tượng. Bấm vào card để xem
+  đầy đủ N1–N10.
 
 Đây là công cụ thống kê mô tả dữ liệu quá khứ, **không phải khuyến nghị đầu
 tư**.
