@@ -10,8 +10,7 @@ nhiêu ngày.
 
 App đọc dữ liệu D+W trực tiếp từ file JSON cache công khai trên GitHub
 (`raw.githubusercontent.com/lamkienthanh92/fx-cmt-app/main/data/screener-data.json`,
-repo `fx-cmt-app` gốc của bạn, dữ liệu Twelve Data được GitHub Action refresh
-mỗi ngày lúc 22:30 UTC). Nghĩa là **không cần cấu hình gì thêm** — chỉ cần:
+repo `fx-cmt-app` gốc của bạn). Nghĩa là **không cần cấu hình gì thêm** — chỉ cần:
 
 ```bash
 npm install
@@ -46,7 +45,10 @@ của chính nó (không phụ thuộc `fx-cmt-app` gốc nữa):
    Settings → Secrets and variables → Actions.
 3. Bật Actions, chạy thử thủ công tab **Actions** → workflow "Fetch screener
    data (Daily + Weekly OHLC)" → **Run workflow** — lần này sẽ tạo
-   `data/screener-data.json` lần đầu.
+   `data/screener-data.json` lần đầu. Từ đó workflow tự chạy **mỗi ngày lúc
+   5:00 sáng giờ Việt Nam** (cron `"0 22 * * *"` UTC, xem
+   `.github/workflows/fetch-data.yml`) — đổi giờ tại dòng `cron` nếu muốn giờ
+   khác.
 4. Sửa hằng số `DATA_URL` ở đầu file `src/SongDayScreener.jsx`, trỏ về đúng
    repo/branch của bạn:
 
@@ -72,6 +74,11 @@ với repo gốc `fx-cmt-app`.
   (0% = đáy sóng đẩy, 100% = đỉnh/đáy cũ trước khi hồi), tính riêng theo
   từng bucket, từng cặp, từng chiều Long/Short — dựa trên **toàn bộ lịch sử
   ~2500 phiên** (khoảng 9-10 năm) của chính cặp đó.
+- **Giá TP thực tế**: mỗi card hiển thị thẳng ô "TP xác suất 80% ngay tại
+  thời điểm hiện tại" quy đổi từ % thang sóng đẩy sang **giá cụ thể** (dựa
+  trên đáy/đỉnh sóng đẩy + biên độ hiện tại của chính cặp đó), không chỉ số
+  % trừu tượng. Bảng chi tiết (bấm vào card) liệt kê giá TP80 cho từng ngày
+  N1–N10 kể từ lúc bắt đầu hồi.
 
 Đây là công cụ thống kê mô tả dữ liệu quá khứ, **không phải khuyến nghị đầu
 tư**.
