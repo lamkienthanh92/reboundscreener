@@ -413,6 +413,36 @@ const thStyle = { padding: "6px 4px", textAlign: "right", borderBottom: `1px sol
 const tdStyle = { padding: "6px 4px", textAlign: "right", borderBottom: `1px solid ${C.borderSoft}` };
 const tdStyleLeft = { ...tdStyle, textAlign: "left", color: C.textDim };
 
+// Card MỜ cho các cặp từng active hôm qua nhưng hôm nay không còn phù hợp —
+// vẫn hiện trong đúng danh mục để có ngữ cảnh, nhưng giảm độ nổi bật rõ rệt
+// so với các cặp đang active, kèm lý do cụ thể.
+function ClosedCard({ w }) {
+  const r = REASON_LABEL[w.reason];
+  const clr = r.color === "long" ? C.long : r.color === "short" ? C.short : C.amber;
+  return (
+    <div style={{
+      opacity: 0.45,
+      background: C.panel,
+      border: `1px solid ${C.borderSoft}`,
+      borderRadius: 14,
+      padding: "10px 14px",
+      marginBottom: 10,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+        <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 14, color: C.textDim }}>{w.sym}</span>
+        <span style={{
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, fontWeight: 700, padding: "1.5px 6px", borderRadius: 4,
+          background: "transparent", border: `1px solid ${C.textFaint}`, color: C.textFaint,
+        }}>
+          {w.side === "long" ? "LONG" : "SHORT"} hôm qua
+        </span>
+        <span style={{ marginLeft: "auto", fontSize: 14 }}>{r.icon}</span>
+      </div>
+      <div style={{ fontSize: 11, color: clr, marginTop: 4 }}>{r.text}</div>
+    </div>
+  );
+}
+
 function StatBox({ k, v }) {
   return (
     <div style={{ background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 9, padding: "8px 9px" }}>
@@ -423,12 +453,44 @@ function StatBox({ k, v }) {
 }
 
 // ============================================================================
+// SO SÁNH VỚI HÔM TRƯỚC — không lưu trữ gì cả. Vì đã có sẵn toàn bộ lịch sử
+// OHLC, chỉ cần chạy LẠI đúng thuật toán trên dữ liệu cắt bớt 1 nến cuối
+// (D.slice(0, -1)) để biết chính xác trạng thái "hôm qua" app từng hiển thị,
+// rồi so trực tiếp với "hôm nay" — không cần localStorage, hoạt động ngay cả
+// lần đầu mở trên thiết bị mới.
+// ============================================================================
+function analyzeSymbol(D, W) {
+  const dInd = buildIndicators(D);
+  const wInd = buildIndicators(W);
+  const { outUp: wUpM, outDown: wDownM } = mapWeeklyToDaily(D, W, wInd.up, wInd.down);
+  const { lowIdx, highIdx } = findPivots(D, PIVWIN);
+  const cp = getCurrentPullback(D, dInd.up, dInd.down, wUpM, wDownM, lowIdx, highIdx);
+  if (!cp) return { cp: null, bt: null, valid: false };
+  const bt = runBacktest(D, dInd.up, dInd.down, wUpM, wDownM, lowIdx, highIdx, cp.side);
+  const tp2Ratio = bt.target80ByDay[1]; // N2 (2 ngày)
+  let valid = true;
+  if (tp2Ratio !== null) {
+    const tp2Price = ratioToPrice(tp2Ratio, cp);
+    const alreadyPassed = cp.side === "long" ? tp2Price <= cp.lastClose : tp2Price >= cp.lastClose;
+    valid = !alreadyPassed;
+  }
+  return { cp, bt, valid };
+}
+
+const REASON_LABEL = {
+  flipped: { text: "Đảo chiều hoàn toàn (Long ↔ Short) — nên chốt ngay", color: "short", icon: "⛔" },
+  ended: { text: "Hồi đã kết thúc / D+W không còn thẳng hàng", color: "amber", icon: "⚠" },
+  tp_reached: { text: "Giá đã vượt TP80 (2 ngày) — có thể đã đạt mục tiêu", color: "long", icon: "✓" },
+};
+
+// ============================================================================
 // MAIN APP
 // ============================================================================
 export default function SongDayScreener() {
   const [status, setStatus] = useState("loading"); // loading | ready | error
   const [errMsg, setErrMsg] = useState("");
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState([]); // tín hiệu đang active hôm nay
+  const [closedItems, setClosedItems] = useState([]); // từng active hôm qua, hôm nay không còn -> hiển thị mờ
   const [generatedAt, setGeneratedAt] = useState(null);
   const [totalScanned, setTotalScanned] = useState(0);
   const [tab, setTab] = useState("Tất cả");
@@ -446,21 +508,33 @@ export default function SongDayScreener() {
         const raw = await res.json();
         const symbols = Object.keys(raw.D);
         const out = [];
+        const closed = [];
         for (const sym of symbols) {
           const D = raw.D[sym], W = raw.W[sym];
-          if (!D || !W || D.length < 120 || W.length < 60) continue;
-          const dInd = buildIndicators(D);
-          const wInd = buildIndicators(W);
-          const { outUp: wUpM, outDown: wDownM } = mapWeeklyToDaily(D, W, wInd.up, wInd.down);
-          const { lowIdx, highIdx } = findPivots(D, PIVWIN);
-          const cp = getCurrentPullback(D, dInd.up, dInd.down, wUpM, wDownM, lowIdx, highIdx);
-          if (!cp) continue;
-          const bt = runBacktest(D, dInd.up, dInd.down, wUpM, wDownM, lowIdx, highIdx, cp.side);
-          out.push({ sym, cp, bt });
+          if (!D || !W || D.length < 121 || W.length < 60) continue;
+
+          const today = analyzeSymbol(D, W);
+          if (today.cp && today.valid) out.push({ sym, cp: today.cp, bt: today.bt });
+
+          // "Hôm qua" = chạy lại ĐÚNG thuật toán trên dữ liệu cắt bớt 1 nến
+          // cuối — không cần lưu trữ gì, tự tính lại được ngay mỗi lần load.
+          const yesterday = analyzeSymbol(D.slice(0, D.length - 1), W);
+          if (yesterday.cp && yesterday.valid) {
+            const stillActiveSameSide = today.cp && today.valid && today.cp.side === yesterday.cp.side;
+            if (!stillActiveSameSide) {
+              let reason;
+              if (today.cp && today.cp.side !== yesterday.cp.side) reason = "flipped";
+              else if (today.cp && today.cp.side === yesterday.cp.side && !today.valid) reason = "tp_reached";
+              else reason = "ended";
+              closed.push({ sym, side: yesterday.cp.side, reason, lastClose: D[D.length - 1].c });
+            }
+          }
         }
         out.sort((a, b) => a.cp.streak - b.cp.streak);
+
         if (!cancelled) {
           setItems(out);
+          setClosedItems(closed);
           setTotalScanned(symbols.length);
           setGeneratedAt(raw.generatedAt);
           setStatus("ready");
@@ -468,6 +542,7 @@ export default function SongDayScreener() {
       } catch (e) {
         if (!cancelled) { setStatus("error"); setErrMsg(e.message || String(e)); }
       }
+
     }
     load();
     return () => { cancelled = true; };
@@ -479,13 +554,23 @@ export default function SongDayScreener() {
     return c;
   }, [items]);
 
+  // Gộp active + closed vào chung từng danh mục để hiển thị cùng lúc (active
+  // rõ nét, closed làm mờ) — không tách banner riêng.
   const grouped = useMemo(() => {
-    const filtered = tab === "Tất cả" ? items : items.filter((x) => CATEGORY[x.sym] === tab);
+    const activeFiltered = tab === "Tất cả" ? items : items.filter((x) => CATEGORY[x.sym] === tab);
+    const closedFiltered = tab === "Tất cả" ? closedItems : closedItems.filter((x) => CATEGORY[x.sym] === tab);
     const byCat = {};
-    for (const it of filtered) { const c = CATEGORY[it.sym]; (byCat[c] = byCat[c] || []).push(it); }
-    for (const c in byCat) byCat[c].sort((a, b) => a.cp.streak - b.cp.streak || b.cp.retr - a.cp.retr);
+    for (const it of activeFiltered) {
+      const c = CATEGORY[it.sym];
+      (byCat[c] = byCat[c] || { active: [], closed: [] }).active.push(it);
+    }
+    for (const it of closedFiltered) {
+      const c = CATEGORY[it.sym];
+      (byCat[c] = byCat[c] || { active: [], closed: [] }).closed.push(it);
+    }
+    for (const c in byCat) byCat[c].active.sort((a, b) => a.cp.streak - b.cp.streak || b.cp.retr - a.cp.retr);
     return byCat;
-  }, [items, tab]);
+  }, [items, closedItems, tab]);
 
   const catsToShow = tab === "Tất cả" ? CAT_ORDER.filter((c) => grouped[c]) : [tab];
 
@@ -522,8 +607,9 @@ export default function SongDayScreener() {
           <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 26, fontWeight: 700, letterSpacing: "-0.01em", margin: "6px 0 4px" }}>Sóng Đẩy</h1>
           <p style={{ color: C.textDim, fontSize: 13.5, lineHeight: 1.5, maxWidth: "56ch", margin: 0 }}>
             Quét <b style={{ color: C.text }}>22 cặp</b> (chính, chéo, phụ, crypto) tìm những cặp đang{" "}
-            <b style={{ color: C.text }}>Daily &amp; Weekly cùng chiều</b> (chỉ cần 1 trong 3 chỉ báo: EMA50/RSI14/MACD) và{" "}
-            <b style={{ color: C.text }}>nến hiện tại đang hồi ngược</b> — rồi tra lại xác
+            <b style={{ color: C.text }}>Daily &amp; Weekly cùng chiều</b> (chỉ cần 1 trong 3 chỉ báo: EMA50/RSI14/MACD),{" "}
+            <b style={{ color: C.text }}>nến hiện tại đang hồi ngược</b>, và <b style={{ color: C.text }}>target 80% (2 ngày) vẫn còn ở phía trước giá</b> —
+            rồi tra lại xác
             suất lịch sử của chính cặp đó: hồi bao sâu, đạt lại target với xác suất 80% trong bao nhiêu ngày.
           </p>
 
@@ -575,23 +661,30 @@ export default function SongDayScreener() {
           </div>
         )}
 
-        {status === "ready" && items.length === 0 && (
+        {status === "ready" && items.length === 0 && closedItems.length === 0 && (
           <div style={{ border: `1px dashed ${C.border}`, borderRadius: 14, padding: "32px 20px", textAlign: "center", color: C.textDim, fontSize: 13.5, marginTop: 10 }}>
             Hiện <b style={{ color: C.text }}>không có cặp nào</b> thỏa điều kiện (Daily &amp; Weekly cùng chiều + đang hồi) lúc này. Quay lại sau — điều kiện
             được đánh giá lại mỗi lần dữ liệu D/W cập nhật.
           </div>
         )}
 
-        {status === "ready" && items.length > 0 && catsToShow.map((c) => (
-          <div key={c}>
-            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: C.textFaint, margin: "18px 2px 8px" }}>
-              {c} ({grouped[c].length})
+        {status === "ready" && (items.length > 0 || closedItems.length > 0) && catsToShow.map((c) => {
+          const g = grouped[c] || { active: [], closed: [] };
+          if (g.active.length === 0 && g.closed.length === 0) return null;
+          return (
+            <div key={c}>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: C.textFaint, margin: "18px 2px 8px" }}>
+                {c} ({g.active.length}{g.closed.length > 0 ? ` +${g.closed.length} đã đóng` : ""})
+              </div>
+              {g.active.map((item) => (
+                <PairCard key={item.sym} item={item} open={openSym === item.sym} onToggle={() => setOpenSym(openSym === item.sym ? null : item.sym)} />
+              ))}
+              {g.closed.map((w) => (
+                <ClosedCard key={w.sym} w={w} />
+              ))}
             </div>
-            {grouped[c].map((item) => (
-              <PairCard key={item.sym} item={item} open={openSym === item.sym} onToggle={() => setOpenSym(openSym === item.sym ? null : item.sym)} />
-            ))}
-          </div>
-        ))}
+          );
+        })}
 
         {status === "ready" && (
           <div style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>

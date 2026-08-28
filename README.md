@@ -83,6 +83,22 @@ với repo gốc `fx-cmt-app`.
   quy đổi từ % thang sóng đẩy sang **giá cụ thể** (dựa trên đáy/đỉnh sóng đẩy
   hiện tại của chính cặp đó), không chỉ số % trừu tượng. Bấm vào card để xem
   đầy đủ N1–N10.
+- **Lọc target đã lỡ**: tự động ẩn các cặp mà giá hiện tại đã vượt qua TP80
+  (2 ngày) rồi — Long thì TP phải cao hơn giá hiện tại, Short thì TP phải
+  thấp hơn; nếu không, mục tiêu đã nằm phía sau giá, không còn ý nghĩa để
+  canh lệnh.
+- **So sánh với ngày quét trước**: mỗi lần mở app, so danh sách tín hiệu hôm
+  nay với lần quét gần nhất trước đó (lưu trong `localStorage` của trình
+  duyệt, giữ 14 ngày gần nhất). Nếu 1 cặp từng xuất hiện hôm trước nhưng hôm
+  nay không còn đủ điều kiện nữa, app cảnh báo rõ lý do:
+  - **⛔ Đảo chiều hoàn toàn** (Long ↔ Short) — nên chốt ngay.
+  - **⚠ Hồi đã kết thúc / D+W không còn thẳng hàng** — xu hướng có dấu hiệu
+    yếu đi, nên xem lại.
+  - **✓ Giá đã vượt TP80 (2 ngày)** — tín hiệu tốt, có thể đã đạt mục tiêu.
+
+  Lưu ý: vì dùng `localStorage`, việc so sánh chỉ hoạt động trên **cùng 1
+  trình duyệt/thiết bị** — mở app trên máy khác lần đầu sẽ chưa có dữ liệu
+  hôm trước để so.
 
 Đây là công cụ thống kê mô tả dữ liệu quá khứ, **không phải khuyến nghị đầu
 tư**.
