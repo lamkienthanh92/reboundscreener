@@ -67,10 +67,13 @@ với repo gốc `fx-cmt-app`.
   - Close so với EMA20, hoặc
   - RSI14 > 50 (tăng) / < 50 (giảm), hoặc
   - MACD(12,26,9) cùng chiều so với đường Signal.
-- **"Hồi"**: chuỗi nến ngược màu liên tiếp tính từ ngày nến đảo chiều gần
-  nhất trong xu hướng đang xác nhận.
-- **Sóng đẩy (impulse)**: đo từ swing-pivot 3-nến gần nhất tới đỉnh/đáy ngay
-  trước khi hồi.
+- **"Hồi"**: số ngày kể từ **đỉnh/đáy pivot 3-nến gần nhất** (không phải đếm
+  chuỗi nến ngược màu liên tiếp — 1 nến ngược màu xen giữa không làm reset về
+  1 ngày nữa). Tối đa **15 ngày** mới còn tính là hồi ngắn hạn; quá mốc đó
+  (VD giá đang phục hồi dần từ 1 cú sập mạnh nhưng chưa lập đỉnh mới) sẽ không
+  được coi là "đang hồi" nữa.
+- **Sóng đẩy (impulse)**: đo từ pivot low/high (nếu Long/Short) liền trước đó
+  tới đỉnh/đáy vừa xác định ở trên.
 - **Target 80%**: với mỗi cặp + mỗi chiều Long/Short, gộp **toàn bộ lịch sử**
   các lần từng khớp đúng mẫu hình này (D+W cùng chiều rồi hồi — thường vài
   trăm lần trên ~9-10 năm dữ liệu), rồi với mỗi mốc N ngày kể từ lúc bắt đầu

@@ -23,7 +23,7 @@ const CAT_ORDER = ["Chính", "Chéo", "Phụ", "Crypto/Hàng hóa"];
 // (dùng đúng định dạng "XXX/YYY" như trong CATEGORY ở trên).
 const EXCLUDED_SYMBOLS = ["USD/SEK", "USD/MXN"];
 
-const NMAX = 10;
+const NMAX = 20; // đủ dài để cover các đợt hồi kéo dài nhiều ngày
 const LOOKBACK = 40;
 const PIVWIN = 3;
 
@@ -117,59 +117,95 @@ function percentile(arr, p) {
 }
 
 // ============================================================================
-// BACKTEST: với mỗi cặp+chiều, tính thẳng target80 theo từng ngày N=1..10,
-// gộp TOÀN BỘ các lần lịch sử từng khớp mẫu hình (D+W cùng chiều + đang hồi)
-// — không chia nhỏ theo bucket độ sâu hồi. Đúng yêu cầu gốc: "trong N ngày,
-// 80% trường hợp trong quá khứ giá đã tăng/giảm đến ngưỡng nào".
+// TRẠNG THÁI HỒI tại 1 ngày bất kỳ (idx) — đỉnh/đáy = PIVOT 3-NẾN GẦN NHẤT
+// (đã có sẵn trong lowIdx/highIdx), KHÔNG dùng cửa sổ N-ngày cố định. Cách này
+// tránh 2 lỗi: (1) màu nến ngược xen giữa làm reset streak về 1 dù giá vẫn xa
+// đỉnh; (2) cửa sổ cố định bắt nhầm đỉnh cũ trước 1 cú sập mạnh làm mốc, gây
+// streak/retracement vô lý (300%+, hàng chục ngày) khi giá đã lập đỉnh MỚI gần
+// hơn (thấp hơn) sau cú sập. "streak" = số ngày kể từ pivot gần nhất đó.
+// ============================================================================
+const MAX_STREAK = 15; // hồi quá 15 ngày không còn là pullback ngắn hạn nữa
+
+function pullbackStateAt(D, idx, lowIdx, highIdx, side) {
+  if (side === "long") {
+    const priorHighs = highIdx.filter((p) => p < idx);
+    if (!priorHighs.length) return null;
+    const peakIdx = priorHighs[priorHighs.length - 1];
+    const peakVal = D[peakIdx].h;
+    const streak = idx - peakIdx;
+    if (streak > MAX_STREAK) return null;
+    const priorLows = lowIdx.filter((p) => p < peakIdx && p >= peakIdx - LOOKBACK);
+    if (!priorLows.length) return null;
+    const pIdx = priorLows[priorLows.length - 1];
+    if (peakIdx - 1 <= pIdx) return null;
+    const plow = D[pIdx].l;
+    const impulse = peakVal - plow;
+    if (impulse <= 0) return null;
+    let curMin = Infinity;
+    for (let j = peakIdx + 1; j <= idx; j++) curMin = Math.min(curMin, D[j].l);
+    const retr = (peakVal - curMin) / impulse;
+    return { side, streak, retr, impulse, base: plow, peakIdx, peakVal };
+  } else {
+    const priorLows = lowIdx.filter((p) => p < idx);
+    if (!priorLows.length) return null;
+    const troughIdx = priorLows[priorLows.length - 1];
+    const troughVal = D[troughIdx].l;
+    const streak = idx - troughIdx;
+    if (streak > MAX_STREAK) return null;
+    const priorHighs = highIdx.filter((p) => p < troughIdx && p >= troughIdx - LOOKBACK);
+    if (!priorHighs.length) return null;
+    const pIdx = priorHighs[priorHighs.length - 1];
+    if (troughIdx - 1 <= pIdx) return null;
+    const phigh = D[pIdx].h;
+    const impulse = phigh - troughVal;
+    if (impulse <= 0) return null;
+    let curMax = -Infinity;
+    for (let j = troughIdx + 1; j <= idx; j++) curMax = Math.max(curMax, D[j].h);
+    const retr = (curMax - troughVal) / impulse;
+    return { side, streak, retr, impulse, base: phigh, peakIdx: troughIdx, peakVal: troughVal };
+  }
+}
+
+function getCurrentPullback(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx) {
+  const last = D.length - 1;
+  let side = null;
+  if (dUp[last] && wUpM[last]) side = "long";
+  else if (dDown[last] && wDownM[last]) side = "short";
+  if (!side) return null;
+  const st = pullbackStateAt(D, last, lowIdx, highIdx, side);
+  if (!st) return null;
+  return { ...st, entryDate: D[st.peakIdx + 1].d, lastDate: D[last].d, lastClose: D[last].c };
+}
+
+// ============================================================================
+// BACKTEST: mẫu = NGÀY ĐẦU TIÊN rời đỉnh/đáy (streak===1 tại ngày đó, tức hôm
+// trước chính là đỉnh/đáy). extByDay[m] = mức mở rộng lũy kế qua (m+1) ngày kể
+// từ đỉnh/đáy đó — nên tra thẳng bằng "streak-1" là ra đúng vị trí hôm nay,
+// "streak" là vị trí ngày mai, v.v. Không chia bucket, không giả định streak=1.
 // ============================================================================
 function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
-  const cand = [];
-  for (let i = 0; i < D.length; i++) {
-    if (side === "long") { if (dUp[i] && wUpM[i] && D[i].c < D[i].o) cand.push(i); }
-    else { if (dDown[i] && wDownM[i] && D[i].c > D[i].o) cand.push(i); }
-  }
-  const pivArr = side === "long" ? lowIdx : highIdx;
   const extByDayRows = [];
-  for (const i of cand) {
-    let pIdx = -1;
-    for (let p = pivArr.length - 1; p >= 0; p--) {
-      if (pivArr[p] < i && pivArr[p] >= i - LOOKBACK) { pIdx = pivArr[p]; break; }
-      if (pivArr[p] < i - LOOKBACK) break;
-    }
-    if (pIdx === -1) continue;
-    if (i - 1 <= pIdx) continue;
-    if (i + NMAX >= D.length) continue;
-
-    let impulse, base;
-    if (side === "long") {
-      const plow = D[pIdx].l;
-      let peak = -Infinity;
-      for (let j = pIdx; j < i; j++) peak = Math.max(peak, D[j].h);
-      impulse = peak - plow;
-      if (impulse <= 0) continue;
-      base = plow;
-    } else {
-      const phigh = D[pIdx].h;
-      let trough = Infinity;
-      for (let j = pIdx; j < i; j++) trough = Math.min(trough, D[j].l);
-      impulse = phigh - trough;
-      if (impulse <= 0) continue;
-      base = phigh;
-    }
+  for (let i = 60; i < D.length; i++) {
+    if (side === "long") { if (!(dUp[i] && wUpM[i])) continue; }
+    else { if (!(dDown[i] && wDownM[i])) continue; }
+    const st = pullbackStateAt(D, i, lowIdx, highIdx, side);
+    if (!st || st.streak !== 1) continue; // chỉ lấy ngày đầu tiên rời đỉnh/đáy
+    if (i + NMAX - 1 >= D.length) continue;
 
     const extByDay = [];
     let cumMin = D[i].l, cumMax = D[i].h;
-    for (let k = 1; k <= NMAX; k++) {
+    extByDay.push(side === "long" ? (cumMax - st.base) / st.impulse : (st.base - cumMin) / st.impulse);
+    for (let k = 1; k < NMAX; k++) {
       const idx = i + k;
       cumMin = Math.min(cumMin, D[idx].l);
       cumMax = Math.max(cumMax, D[idx].h);
-      extByDay.push(side === "long" ? (cumMax - base) / impulse : (base - cumMin) / impulse);
+      extByDay.push(side === "long" ? (cumMax - st.base) / st.impulse : (st.base - cumMin) / st.impulse);
     }
     extByDayRows.push(extByDay);
   }
 
-  // Target80ByDay[k] = mức mà 80% xác suất giá ĐÃ đạt tới (percentile thứ 20
-  // của phân phối, vì "đạt >= V với xác suất 80%" <=> V = percentile 20).
+  // Target80ByDay[m] = mức mà 80% xác suất giá ĐÃ đạt tới qua (m+1) ngày kể từ
+  // đỉnh/đáy (percentile thứ 20, vì "đạt >= V với xác suất 80%" <=> V = pct20).
   const target80ByDay = [];
   for (let k = 0; k < NMAX; k++) {
     const vals = extByDayRows.map((r) => r[k]);
@@ -179,60 +215,6 @@ function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
   for (let k = 0; k < NMAX; k++) { if (target80ByDay[k] !== null && target80ByDay[k] >= 1.0) { crossDay = k + 1; break; } }
 
   return { n: extByDayRows.length, target80ByDay, crossDay };
-}
-
-// ============================================================================
-// LIVE current-pullback state
-// ============================================================================
-function getCurrentPullback(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx) {
-  const last = D.length - 1;
-  let side = null;
-  if (dUp[last] && wUpM[last] && D[last].c < D[last].o) side = "long";
-  else if (dDown[last] && wDownM[last] && D[last].c > D[last].o) side = "short";
-  if (!side) return null;
-
-  let streak = 0, idx = last;
-  while (idx >= 0) {
-    const isOpp = side === "long" ? D[idx].c < D[idx].o : D[idx].c > D[idx].o;
-    if (!isOpp) break;
-    streak++; idx--;
-  }
-  const streakStart = last - streak + 1;
-  const pivArr = side === "long" ? lowIdx : highIdx;
-  let pIdx = -1;
-  for (let p = pivArr.length - 1; p >= 0; p--) { if (pivArr[p] < streakStart) { pIdx = pivArr[p]; break; } }
-  if (pIdx === -1) return null;
-  if (streakStart - 1 <= pIdx) return null;
-
-  if (side === "long") {
-    const plow = D[pIdx].l;
-    let peak = -Infinity;
-    for (let j = pIdx; j < streakStart; j++) peak = Math.max(peak, D[j].h);
-    const impulse = peak - plow;
-    if (impulse <= 0) return null;
-    let curMin = Infinity;
-    for (let j = streakStart; j <= last; j++) curMin = Math.min(curMin, D[j].l);
-    const retr = (peak - curMin) / impulse;
-    return {
-      side, streak, retr, impulse,
-      base: plow, // ratio 0% -> giá này (dùng để quy target% ra giá thực)
-      entryDate: D[streakStart].d, lastDate: D[last].d, lastClose: D[last].c,
-    };
-  } else {
-    const phigh = D[pIdx].h;
-    let trough = Infinity;
-    for (let j = pIdx; j < streakStart; j++) trough = Math.min(trough, D[j].l);
-    const impulse = phigh - trough;
-    if (impulse <= 0) return null;
-    let curMax = -Infinity;
-    for (let j = streakStart; j <= last; j++) curMax = Math.max(curMax, D[j].h);
-    const retr = (curMax - trough) / impulse;
-    return {
-      side, streak, retr, impulse,
-      base: phigh, // ratio 0% -> giá này (short đi từ đỉnh xuống nên base là đỉnh)
-      entryDate: D[streakStart].d, lastDate: D[last].d, lastClose: D[last].c,
-    };
-  }
 }
 
 // Quy đổi 1 mức target% (thang impulse) ra GIÁ THỰC, theo đúng chiều Long/Short.
@@ -310,8 +292,10 @@ function PairCard({ item, open, onToggle }) {
   const sideSoft = cp.side === "long" ? C.longSoft : C.shortSoft;
   const crossTxt = bt.crossDay ? `${bt.crossDay} ngày` : `chưa đạt trong ${NMAX} ngày`;
 
-  // 3 mốc chính người dùng quan tâm: 2 / 3 / 4 ngày kể từ lúc bắt đầu hồi (N0)
-  const highlightDays = [2, 3, 4];
+  // Hôm nay ứng với vị trí (streak-1) trong mảng target80ByDay (index 0 = ngày
+  // 1 kể từ đỉnh/đáy). +1/+2/+3 ngày NỮA kể từ hôm nay = todayIdx+1, +2, +3.
+  const todayIdx = cp.streak - 1;
+  const offsets = [1, 2, 3];
 
   return (
     <div
@@ -335,7 +319,7 @@ function PairCard({ item, open, onToggle }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: C.textFaint, whiteSpace: "nowrap" }}>
-            hồi <b style={{ color: C.textDim }}>{cp.streak}</b> ngày
+            hồi <b style={{ color: C.textDim }}>{cp.streak}</b> ngày (từ đỉnh/đáy)
           </span>
           <ChevronDown size={14} color={C.textFaint} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .15s ease" }} />
         </div>
@@ -348,16 +332,17 @@ function PairCard({ item, open, onToggle }) {
         <b style={{ color: C.textDim }}>{bt.n}</b> lần mẫu hình này từng xảy ra trong lịch sử {sym}
       </div>
 
-      {/* TP 80% cho 2 / 3 / 4 ngày — đúng yêu cầu gốc: trong N ngày, 80% trường
-          hợp lịch sử giá đã đạt tới mức nào. Tính gộp trên toàn bộ mẫu, không
-          chia theo bucket độ sâu hồi. */}
+      {/* TP 80% cho 1 / 2 / 3 ngày NỮA kể từ HÔM NAY (không phải từ lúc bắt đầu
+          hồi) — vì đã đang hồi được {cp.streak} ngày rồi, mốc "2/3/4 ngày" cố
+          định không còn đúng nghĩa. */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginTop: 10 }}>
-        {highlightDays.map((d) => {
-          const ratio = bt.target80ByDay[d - 1];
+        {offsets.map((off) => {
+          const idx = todayIdx + off;
+          const ratio = idx < NMAX ? bt.target80ByDay[idx] : null;
           const price = ratioToPrice(ratio, cp);
           return (
-            <div key={d} style={{ background: sideSoft, border: `1px solid ${sideColor}55`, borderRadius: 10, padding: "8px 9px", textAlign: "center" }}>
-              <div style={{ fontSize: 9.5, color: C.textDim, letterSpacing: "0.02em" }}>TP 80% · {d} ngày</div>
+            <div key={off} style={{ background: sideSoft, border: `1px solid ${sideColor}55`, borderRadius: 10, padding: "8px 9px", textAlign: "center" }}>
+              <div style={{ fontSize: 9.5, color: C.textDim, letterSpacing: "0.02em" }}>TP 80% · +{off} ngày</div>
               <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: sideColor, marginTop: 3 }}>
                 {ratio !== null ? fmtPrice(price, sym) : "—"}
               </div>
@@ -382,7 +367,7 @@ function PairCard({ item, open, onToggle }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5 }}>
             <thead>
               <tr>
-                <th style={thStyle}>Ngày (từ lúc hồi)</th>
+                <th style={thStyle}>Ngày (từ đỉnh/đáy)</th>
                 <th style={thStyle}>Target 80%</th>
                 <th style={thStyle}>Giá TP (80%)</th>
               </tr>
@@ -391,10 +376,10 @@ function PairCard({ item, open, onToggle }) {
               {Array.from({ length: NMAX }).map((_, k) => {
                 const ratio = bt.target80ByDay[k];
                 const priceV = ratioToPrice(ratio, cp);
-                const isCur = k + 1 === Math.min(NMAX, cp.streak + 1);
+                const isCur = k === todayIdx;
                 return (
                   <tr key={k} style={{ background: isCur ? C.amberSoft : "transparent" }}>
-                    <td style={tdStyleLeft}>N{k + 1}</td>
+                    <td style={tdStyleLeft}>N{k + 1}{isCur ? " (hôm nay)" : ""}</td>
                     <td style={{ ...tdStyle, color: isCur ? C.amber : C.text, fontWeight: isCur ? 700 : 400 }}>{fmtPct(ratio)}</td>
                     <td style={{ ...tdStyle, color: isCur ? C.amber : C.text, fontWeight: isCur ? 700 : 400 }}>{ratio !== null ? fmtPrice(priceV, sym) : "—"}</td>
                   </tr>
@@ -403,10 +388,10 @@ function PairCard({ item, open, onToggle }) {
             </tbody>
           </table>
           <p style={{ fontSize: 11.5, color: C.textFaint, lineHeight: 1.55, marginTop: 10 }}>
-            <b style={{ color: C.textDim }}>Đọc bảng:</b> mỗi dòng Nk là "trong k ngày kể từ lúc bắt đầu hồi, 80% trường hợp trong lịch sử giá đã đạt tới mức
-            này" — tính trên toàn bộ <b style={{ color: C.textDim }}>{bt.n}</b> lần cặp {sym} từng có D+W cùng chiều rồi hồi (không tách theo mức hồi sâu/nông
-            hiện tại). Cột % theo thang 0–100%+ (100% = đỉnh/đáy cũ trước khi hồi); cột giá quy đổi sang giá thực dựa trên biên độ sóng đẩy hiện tại. Dòng nền
-            vàng là mốc ngày hiện tại (đã hồi {cp.streak} ngày).
+            <b style={{ color: C.textDim }}>Đọc bảng:</b> mỗi dòng Nk là "qua k ngày kể từ ĐỈNH/ĐÁY gần nhất (không phải từ lúc màu nến đổi), 80% trường hợp
+            trong lịch sử giá đã đạt tới mức này" — tính trên toàn bộ <b style={{ color: C.textDim }}>{bt.n}</b> lần cặp {sym} từng có D+W cùng chiều rồi rời
+            đỉnh/đáy. Cột % theo thang 0–100%+ (100% = đỉnh/đáy cũ trước khi hồi); cột giá quy đổi sang giá thực dựa trên biên độ sóng đẩy hiện tại. Dòng nền
+            vàng ("hôm nay") là vị trí hiện tại, ứng với đã hồi {cp.streak} ngày kể từ đỉnh/đáy.
           </p>
         </div>
       )}
@@ -472,11 +457,15 @@ function analyzeSymbol(D, W) {
   const cp = getCurrentPullback(D, dInd.up, dInd.down, wUpM, wDownM, lowIdx, highIdx);
   if (!cp) return { cp: null, bt: null, valid: false };
   const bt = runBacktest(D, dInd.up, dInd.down, wUpM, wDownM, lowIdx, highIdx, cp.side);
-  const tp2Ratio = bt.target80ByDay[1]; // N2 (2 ngày)
+  // Kiểm tra target NGÀY MAI (1 ngày kể từ HÔM NAY, tức vị trí streak trong
+  // mảng 0-based) đã bị giá vượt qua chưa — dùng đúng vị trí hiện tại (streak)
+  // thay vì cố định "ngày 2" như trước, vì streak giờ có thể là bất kỳ số nào.
+  const nextIdx = cp.streak; // todayIdx (streak-1) + 1
+  const nextRatio = nextIdx < NMAX ? bt.target80ByDay[nextIdx] : null;
   let valid = true;
-  if (tp2Ratio !== null) {
-    const tp2Price = ratioToPrice(tp2Ratio, cp);
-    const alreadyPassed = cp.side === "long" ? tp2Price <= cp.lastClose : tp2Price >= cp.lastClose;
+  if (nextRatio !== null) {
+    const nextPrice = ratioToPrice(nextRatio, cp);
+    const alreadyPassed = cp.side === "long" ? nextPrice <= cp.lastClose : nextPrice >= cp.lastClose;
     valid = !alreadyPassed;
   }
   return { cp, bt, valid };
@@ -694,7 +683,7 @@ export default function SongDayScreener() {
         {status === "ready" && (
           <div style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
             Phương pháp: xu hướng D/W xác nhận khi <b>≥1 trong 3</b> chỉ báo đồng thuận (Close so EMA20, RSI14 &gt;/&lt; 50, MACD(12,26,9) cắt Signal) — không cần
-            cả 3 cùng lúc; "hồi" là chuỗi nến ngược màu liên tiếp kể từ nến đảo chiều gần nhất;
+            cả 3 cùng lúc; "hồi" = số ngày kể từ ĐỈNH/ĐÁY pivot 3-nến gần nhất (không phải đếm nến ngược màu liên tiếp, tối đa 15 ngày mới còn tính là hồi ngắn hạn);
             biên độ sóng đẩy đo từ swing-pivot 3-nến gần nhất tới đỉnh/đáy trước khi hồi. Target 80% = percentile 20 của phân phối mở rộng lũy kế trong lịch sử
             của chính từng cặp, theo từng mức hồi đã chạm. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.
           </div>
