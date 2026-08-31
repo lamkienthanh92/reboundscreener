@@ -18,6 +18,11 @@ const CATEGORY = {
 };
 const CAT_ORDER = ["Chính", "Chéo", "Phụ", "Crypto/Hàng hóa"];
 
+// Các cặp sàn của bạn không hỗ trợ — loại thẳng khỏi vòng quét, không hiển thị
+// dù có tín hiệu hay không. Thêm/bớt mã ở đây theo đúng danh mục sàn của bạn
+// (dùng đúng định dạng "XXX/YYY" như trong CATEGORY ở trên).
+const EXCLUDED_SYMBOLS = ["USD/SEK", "USD/MXN"];
+
 const NMAX = 10;
 const LOOKBACK = 40;
 const PIVWIN = 3;
@@ -63,15 +68,15 @@ function macd(vals, fast = 12, slow = 26, sig = 9) {
 }
 function buildIndicators(bars) {
   const closes = bars.map((b) => b.c);
-  const ema50 = ema(closes, 50);
+  const ema20 = ema(closes, 20);
   const rsi14 = rsi(closes, 14);
   const { line, signal } = macd(closes);
   // Chỉ cần 1 trong 3 chỉ báo xác nhận là đủ (OR), không cần cả 3 đồng thuận (AND) như trước.
   const up = closes.map((c, i) =>
-    c > ema50[i] || (rsi14[i] !== null && rsi14[i] > 50) || line[i] > signal[i]
+    c > ema20[i] || (rsi14[i] !== null && rsi14[i] > 50) || line[i] > signal[i]
   );
   const down = closes.map((c, i) =>
-    c < ema50[i] || (rsi14[i] !== null && rsi14[i] < 50) || line[i] < signal[i]
+    c < ema20[i] || (rsi14[i] !== null && rsi14[i] < 50) || line[i] < signal[i]
   );
   return { up, down };
 }
@@ -506,7 +511,7 @@ export default function SongDayScreener() {
         const res = await fetch(DATA_URL, { cache: "no-store" });
         if (!res.ok) throw new Error("HTTP " + res.status);
         const raw = await res.json();
-        const symbols = Object.keys(raw.D);
+        const symbols = Object.keys(raw.D).filter((s) => !EXCLUDED_SYMBOLS.includes(s));
         const out = [];
         const closed = [];
         for (const sym of symbols) {
@@ -607,7 +612,7 @@ export default function SongDayScreener() {
           <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 26, fontWeight: 700, letterSpacing: "-0.01em", margin: "6px 0 4px" }}>Sóng Đẩy</h1>
           <p style={{ color: C.textDim, fontSize: 13.5, lineHeight: 1.5, maxWidth: "56ch", margin: 0 }}>
             Quét <b style={{ color: C.text }}>22 cặp</b> (chính, chéo, phụ, crypto) tìm những cặp đang{" "}
-            <b style={{ color: C.text }}>Daily &amp; Weekly cùng chiều</b> (chỉ cần 1 trong 3 chỉ báo: EMA50/RSI14/MACD),{" "}
+            <b style={{ color: C.text }}>Daily &amp; Weekly cùng chiều</b> (chỉ cần 1 trong 3 chỉ báo: EMA20/RSI14/MACD),{" "}
             <b style={{ color: C.text }}>nến hiện tại đang hồi ngược</b>, và <b style={{ color: C.text }}>target 80% (2 ngày) vẫn còn ở phía trước giá</b> —
             rồi tra lại xác
             suất lịch sử của chính cặp đó: hồi bao sâu, đạt lại target với xác suất 80% trong bao nhiêu ngày.
@@ -617,7 +622,7 @@ export default function SongDayScreener() {
             <div style={{ display: "flex", gap: 14, marginTop: 14, flexWrap: "wrap", fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, color: C.textFaint }}>
               <span><b style={{ color: C.textDim }}>{totalScanned}</b> cặp quét</span>
               <span><b style={{ color: C.textDim }}>{items.length}</b> cặp đang hồi thỏa điều kiện</span>
-              <span>Nguồn: cache D/W GitHub Action, tự quét lúc 5:00 sáng giờ VN mỗi ngày (Twelve Data)</span>
+              <span>Nguồn: cache D/W GitHub Action, tự quét lúc 4:10 &amp; 7:10 sáng giờ VN mỗi ngày (Twelve Data)</span>
             </div>
           )}
         </header>
@@ -688,7 +693,7 @@ export default function SongDayScreener() {
 
         {status === "ready" && (
           <div style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
-            Phương pháp: xu hướng D/W xác nhận khi <b>≥1 trong 3</b> chỉ báo đồng thuận (Close so EMA50, RSI14 &gt;/&lt; 50, MACD(12,26,9) cắt Signal) — không cần
+            Phương pháp: xu hướng D/W xác nhận khi <b>≥1 trong 3</b> chỉ báo đồng thuận (Close so EMA20, RSI14 &gt;/&lt; 50, MACD(12,26,9) cắt Signal) — không cần
             cả 3 cùng lúc; "hồi" là chuỗi nến ngược màu liên tiếp kể từ nến đảo chiều gần nhất;
             biên độ sóng đẩy đo từ swing-pivot 3-nến gần nhất tới đỉnh/đáy trước khi hồi. Target 80% = percentile 20 của phân phối mở rộng lũy kế trong lịch sử
             của chính từng cặp, theo từng mức hồi đã chạm. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.

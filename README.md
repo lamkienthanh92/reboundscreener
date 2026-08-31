@@ -1,7 +1,7 @@
 # Sóng Đẩy — Bộ lọc hồi kỹ thuật D+W
 
 Apps React (Vite) quét 22 cặp FX/crypto, lọc ra những cặp đang **Daily & Weekly
-cùng chiều xu hướng** (≥1 trong 3 chỉ báo: EMA50 / RSI14 / MACD) **và** nến
+cùng chiều xu hướng** (≥1 trong 3 chỉ báo: EMA20 / RSI14 / MACD) **và** nến
 hiện tại đang hồi ngược màu — rồi backtest lại chính lịch sử của từng cặp đó
 để trả lời: trong 2/3/4 ngày kể từ lúc hồi, 80% trường hợp trong quá khứ giá
 đã đạt tới mức nào.
@@ -46,9 +46,9 @@ của chính nó (không phụ thuộc `fx-cmt-app` gốc nữa):
 3. Bật Actions, chạy thử thủ công tab **Actions** → workflow "Fetch screener
    data (Daily + Weekly OHLC)" → **Run workflow** — lần này sẽ tạo
    `data/screener-data.json` lần đầu. Từ đó workflow tự chạy **mỗi ngày lúc
-   5:00 sáng giờ Việt Nam** (cron `"0 22 * * *"` UTC, xem
-   `.github/workflows/fetch-data.yml`) — đổi giờ tại dòng `cron` nếu muốn giờ
-   khác.
+   4:10 và 7:10 sáng giờ Việt Nam** (2 dòng `cron`: `"10 21 * * *"` và
+   `"10 0 * * *"` UTC, xem `.github/workflows/fetch-data.yml`) — sửa/thêm
+   dòng `cron` nếu muốn đổi giờ hoặc số lần chạy.
 4. Sửa hằng số `DATA_URL` ở đầu file `src/SongDayScreener.jsx`, trỏ về đúng
    repo/branch của bạn:
 
@@ -64,7 +64,7 @@ với repo gốc `fx-cmt-app`.
 
 - **Xu hướng D/W**: chỉ cần **1 trong 3** chỉ báo xác nhận là đủ (không cần
   cả 3 đồng thuận cùng lúc):
-  - Close so với EMA50, hoặc
+  - Close so với EMA20, hoặc
   - RSI14 > 50 (tăng) / < 50 (giảm), hoặc
   - MACD(12,26,9) cùng chiều so với đường Signal.
 - **"Hồi"**: chuỗi nến ngược màu liên tiếp tính từ ngày nến đảo chiều gần
