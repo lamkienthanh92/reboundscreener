@@ -676,16 +676,25 @@ function analyzeSymbol(D, W) {
   const cp = getCurrentPullback(D, dInd.up, dInd.down, wUpM, wDownM);
   if (!cp) return { cp: null, bt: null, valid: false };
   const bt = runBacktest(D, dInd.up, dInd.down, wUpM, wDownM, cp.side);
-  // Kiểm tra target NGÀY MAI (vị trí streak trong mảng 0-based) đã bị giá
-  // CHẠM TỚI chưa — dùng extSoFar (mức cao/thấp nhất giá ĐÃ TỪNG chạm kể từ
-  // đỉnh/đáy), KHÔNG dùng giá đóng cửa cuối cùng. Nếu chỉ so giá đóng cửa,
-  // trường hợp giá đã bật lên chạm target rồi lùi lại nhẹ sẽ bị tính nhầm là
-  // "chưa đạt" và tiếp tục hiện — đúng bug đã gặp.
+  // Kiểm tra target NGÀY MAI (vị trí streak trong mảng 0-based) đã bị giá VƯỢT
+  // QUA chưa — so với giá ĐÓNG CỬA hiện tại (lastClose).
+  //
+  // LƯU Ý: trước đây so với extSoFar (mức cao/thấp nhất TỪNG chạm — cộng dồn)
+  // để tránh bug "giá chạm target rồi lùi lại vẫn coi là chưa đạt". NHƯNG sau
+  // khi sửa target80ByDay sang tính RIÊNG TỪNG NGÀY (giảm dần theo ngày, đúng
+  // bản chất thống kê — xem log sửa trước), so extSoFar (một đại lượng CỘNG
+  // DỒN, luôn neo gần mức đỉnh ngay từ ngày 1) với target80ByDay (một đại
+  // lượng RIÊNG TỪNG NGÀY, giảm dần) là SO SÁNH LỆCH CHUẨN — gần như luôn báo
+  // "đã chạm" một cách giả tạo dù mới streak=1, khiến app gần như luôn 0 tín
+  // hiệu. Sửa: quay lại so với giá đóng cửa hiện tại — nhất quán với cách
+  // target80ByDay đang được tính (riêng từng ngày).
   const nextIdx = cp.streak; // todayIdx (streak-1) + 1
   const nextRatio = nextIdx < NMAX ? bt.target80ByDay[nextIdx] : null;
   let valid = true;
   if (nextRatio !== null) {
-    valid = cp.extSoFar < nextRatio;
+    const nextPrice = ratioToPrice(nextRatio, cp);
+    const alreadyPassed = cp.side === "long" ? nextPrice <= cp.lastClose : nextPrice >= cp.lastClose;
+    valid = !alreadyPassed;
   }
   return { cp, bt, valid };
 }
