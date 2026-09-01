@@ -3,7 +3,7 @@
 Apps React (Vite) quét 18 cặp FX/crypto (22 cặp gốc, trừ 4 cặp sàn không hỗ
 trợ: USD/SEK, USD/MXN, USD/ZAR, USD/NOK), lọc ra những cặp đang **Daily &
 Weekly cùng chiều xu hướng** (≥1 trong 3 chỉ báo: EMA20 / RSI14 so MA10 / màu
-nến Heikin Ashi) **và** đang hồi đúng 1-2 ngày kể từ đỉnh/đáy gần nhất — rồi
+nến Heikin Ashi) **và** đang hồi đúng 1-3 ngày kể từ đỉnh/đáy gần nhất — rồi
 backtest lại chính lịch sử của từng cặp đó để trả lời: trong N ngày tới, 80%
 trường hợp trong quá khứ giá đã đạt tới mức nào.
 
@@ -72,14 +72,16 @@ với repo gốc `fx-cmt-app`.
     nhiều so với chờ MACD cắt Signal.
 - **"Hồi"**: số ngày kể từ **đỉnh/đáy pivot 3-nến gần nhất** (không phải đếm
   chuỗi nến ngược màu liên tiếp — 1 nến ngược màu xen giữa không làm reset về
-  1 ngày nữa). **Chỉ chấp nhận 1-2 ngày** — từ 3 ngày trở đi loại bỏ hoàn toàn
+  1 ngày nữa). **Chỉ chấp nhận 1-3 ngày** — từ 4 ngày trở đi loại bỏ hoàn toàn
   do nguy cơ đảo chiều.
 - **Sóng đẩy (impulse)**: đo từ pivot low/high (nếu Long/Short) liền trước đó
   tới đỉnh/đáy vừa xác định ở trên.
 - **Target 80%**: với mỗi cặp + mỗi chiều Long/Short, gộp **toàn bộ lịch sử**
   các lần từng khớp đúng mẫu hình này (D+W cùng chiều rồi hồi — thường vài
   trăm lần trên ~9-10 năm dữ liệu), rồi với mỗi mốc N ngày kể từ lúc bắt đầu
-  hồi (N1…N10), tính percentile thứ 20 của mức mở rộng lũy kế đạt được. Percentile
+  hồi (N1…N10), tính percentile thứ 20 của giá **đúng ngày đó** (không cộng dồn/
+  running-max — tránh bị "mắc kẹt" ở mức cao do ngày đầu tiên còn gần đỉnh).
+  Percentile
   20 tương đương: **80% số lần trong lịch sử, giá đã đạt tới mức này trong N
   ngày đó** — đúng câu hỏi gốc "trong N ngày, 80% trường hợp giá đạt đến
   ngưỡng nào". Không tách nhỏ theo mức hồi sâu/nông hiện tại — dùng chung 1

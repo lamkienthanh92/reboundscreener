@@ -153,7 +153,7 @@ function percentile(arr, p) {
 // streak/retracement vô lý (300%+, hàng chục ngày) khi giá đã lập đỉnh MỚI gần
 // hơn (thấp hơn) sau cú sập. "streak" = số ngày kể từ pivot gần nhất đó.
 // ============================================================================
-const MAX_STREAK = 2; // chỉ chấp nhận hồi 1-2 ngày; từ 3 ngày trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều
+const MAX_STREAK = 3; // chỉ chấp nhận hồi 1-3 ngày; từ 4 ngày trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều
 
 function pullbackStateAt(D, idx, lowIdx, highIdx, side) {
   if (side === "long") {
@@ -216,9 +216,18 @@ function getCurrentPullback(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx) {
 
 // ============================================================================
 // BACKTEST: mẫu = NGÀY ĐẦU TIÊN rời đỉnh/đáy (streak===1 tại ngày đó, tức hôm
-// trước chính là đỉnh/đáy). extByDay[m] = mức mở rộng lũy kế qua (m+1) ngày kể
-// từ đỉnh/đáy đó — nên tra thẳng bằng "streak-1" là ra đúng vị trí hôm nay,
-// "streak" là vị trí ngày mai, v.v. Không chia bucket, không giả định streak=1.
+// trước chính là đỉnh/đáy). extByDay[m] = mức giá CỦA RIÊNG ngày (m+1) kể từ
+// đỉnh/đáy đó (KHÔNG cộng dồn/running-max) — tra thẳng bằng "streak-1" ra
+// đúng vị trí hôm nay.
+//
+// QUAN TRỌNG: trước đây dùng running-max (mức cao/thấp nhất TỪNG chạm tới,
+// cộng dồn theo thời gian) — gây sai lệch: ngày 1 (ngay sau đỉnh) thường vẫn
+// còn khá gần đỉnh, nên MỘT KHI ngày 1 đã chạm mức cao, giá trị đó "mắc kẹt"
+// cho MỌI ngày sau (vì max không bao giờ giảm), dù giá thực tế các ngày kế
+// tiếp tiếp tục giảm sâu hơn nhiều. Hệ quả: target80 luôn hiện gần đỉnh cũ dù
+// xác suất thực tế không cao — đúng như quan sát. Sửa: dùng giá trị CỦA RIÊNG
+// từng ngày, phản ánh đúng "ngày đó giá đang ở đâu", có thể thấp nếu đang hồi
+// sâu — đúng bản chất thống kê.
 // ============================================================================
 function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
   const extByDayRows = [];
@@ -232,19 +241,16 @@ function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
     if (i + NMAX - 1 >= D.length) continue;
 
     const extByDay = [];
-    let cumMin = D[i].l, cumMax = D[i].h;
-    extByDay.push(side === "long" ? (cumMax - st.base) / st.impulse : (st.base - cumMin) / st.impulse);
-    for (let k = 1; k < NMAX; k++) {
+    for (let k = 0; k < NMAX; k++) {
       const idx = i + k;
-      cumMin = Math.min(cumMin, D[idx].l);
-      cumMax = Math.max(cumMax, D[idx].h);
-      extByDay.push(side === "long" ? (cumMax - st.base) / st.impulse : (st.base - cumMin) / st.impulse);
+      // Giá trị CỦA RIÊNG ngày idx (Long: High, Short: Low) — không cộng dồn.
+      extByDay.push(side === "long" ? (D[idx].h - st.base) / st.impulse : (st.base - D[idx].l) / st.impulse);
     }
     extByDayRows.push(extByDay);
   }
 
-  // Target80ByDay[m] = mức mà 80% xác suất giá ĐÃ đạt tới qua (m+1) ngày kể từ
-  // đỉnh/đáy (percentile thứ 20, vì "đạt >= V với xác suất 80%" <=> V = pct20).
+  // Target80ByDay[k] = mức mà 80% xác suất giá ĐANG Ở (đúng ngày đó, không
+  // cộng dồn) qua (k+1) ngày kể từ đỉnh/đáy (percentile thứ 20).
   const target80ByDay = [];
   for (let k = 0; k < NMAX; k++) {
     const vals = extByDayRows.map((r) => r[k]);
@@ -913,7 +919,7 @@ export default function SongDayScreener() {
         {status === "ready" && (
           <div style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
             Phương pháp: Daily &amp; Weekly cùng chiều khi <b>≥1 trong 3</b> chỉ báo (Close so EMA20, RSI14 so MA10 của chính nó, màu nến Heikin Ashi) đồng thuận trên mỗi khung — không cần cả 3 cùng lúc,
-            áp dụng như nhau cho cả Daily và Weekly. "Hồi" = số ngày kể từ ĐỈNH/ĐÁY pivot 3-nến gần nhất, <b>chỉ chấp nhận 1-2 ngày</b> — từ 3 ngày trở đi loại
+            áp dụng như nhau cho cả Daily và Weekly. "Hồi" = số ngày kể từ ĐỈNH/ĐÁY pivot 3-nến gần nhất, <b>chỉ chấp nhận 1-3 ngày</b> — từ 4 ngày trở đi loại
             bỏ hoàn toàn do nguy cơ đảo chiều. Biên độ sóng đẩy đo từ swing-pivot liền trước tới đỉnh/đáy đó. Target 80% = percentile 20 của phân phối mở rộng
             lũy kế trong lịch sử của chính từng cặp. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.
           </div>
