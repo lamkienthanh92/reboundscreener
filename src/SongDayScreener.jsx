@@ -21,7 +21,7 @@ const CAT_ORDER = ["Chính", "Chéo", "Phụ", "Crypto/Hàng hóa"];
 // Các cặp sàn của bạn không hỗ trợ — loại thẳng khỏi vòng quét, không hiển thị
 // dù có tín hiệu hay không. Thêm/bớt mã ở đây theo đúng danh mục sàn của bạn
 // (dùng đúng định dạng "XXX/YYY" như trong CATEGORY ở trên).
-const EXCLUDED_SYMBOLS = ["USD/SEK", "USD/MXN"];
+const EXCLUDED_SYMBOLS = ["USD/SEK", "USD/MXN", "USD/ZAR", "USD/NOK"];
 
 const NMAX = 20; // đủ dài để cover các đợt hồi kéo dài nhiều ngày
 const LOOKBACK = 40;
@@ -60,34 +60,54 @@ function rsi(vals, period = 14) {
   }
   return out;
 }
-function macd(vals, fast = 12, slow = 26, sig = 9) {
-  const eF = ema(vals, fast), eS = ema(vals, slow);
-  const line = vals.map((_, i) => eF[i] - eS[i]);
-  const signal = ema(line, sig);
-  return { line, signal };
+// SMA thuần (dùng để làm đường tín hiệu MA10 cho RSI) — bỏ qua các phần tử null.
+function sma(vals, period) {
+  const out = new Array(vals.length).fill(null);
+  for (let i = 0; i < vals.length; i++) {
+    const win = vals.slice(Math.max(0, i - period + 1), i + 1).filter((v) => v !== null);
+    if (win.length < period) continue;
+    out[i] = win.reduce((a, b) => a + b, 0) / win.length;
+  }
+  return out;
+}
+// Heikin Ashi — nến trung bình làm mượt, đổi màu sớm/ổn định hơn nhiều so với
+// chờ MACD cắt Signal. haClose>haOpen = nến xanh (tăng), ngược lại = đỏ (giảm).
+function heikinAshi(bars) {
+  const n = bars.length;
+  const haOpen = new Array(n), haClose = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const b = bars[i];
+    haClose[i] = (b.o + b.h + b.l + b.c) / 4;
+    haOpen[i] = i === 0 ? (b.o + b.c) / 2 : (haOpen[i - 1] + haClose[i - 1]) / 2;
+  }
+  return { haOpen, haClose };
 }
 function buildIndicators(bars) {
   const closes = bars.map((b) => b.c);
   const ema20 = ema(closes, 20);
   const rsi14 = rsi(closes, 14);
-  const { line, signal } = macd(closes);
-  // Chỉ cần 1 trong 3 chỉ báo xác nhận là đủ (OR), không cần cả 3 đồng thuận (AND) như trước.
+  const rsiMa10 = sma(rsi14, 10);
+  const { haOpen, haClose } = heikinAshi(bars);
+  // Chỉ cần 1 trong 3 chỉ báo xác nhận là đủ (OR), không cần cả 3 đồng thuận (AND):
+  // (1) Close vs EMA20, (2) RSI14 vs MA10 của chính nó (không phải mốc 50 cố định),
+  // (3) màu nến Heikin Ashi (phản ứng nhanh hơn nhiều so với chờ MACD cắt Signal).
   const up = closes.map((c, i) =>
-    c > ema20[i] || (rsi14[i] !== null && rsi14[i] > 50) || line[i] > signal[i]
+    c > ema20[i] || (rsi14[i] !== null && rsiMa10[i] !== null && rsi14[i] > rsiMa10[i]) || haClose[i] > haOpen[i]
   );
   const down = closes.map((c, i) =>
-    c < ema20[i] || (rsi14[i] !== null && rsi14[i] < 50) || line[i] < signal[i]
+    c < ema20[i] || (rsi14[i] !== null && rsiMa10[i] !== null && rsi14[i] < rsiMa10[i]) || haClose[i] < haOpen[i]
   );
   return { up, down };
 }
 // Bản đầy đủ (trả nguyên chuỗi số, không rút gọn thành up/down) — dùng cho
-// modal xem chart chi tiết, để hiển thị đúng giá trị EMA20/RSI14/MACD thật.
+// modal xem chart chi tiết, để hiển thị đúng giá trị EMA20/RSI14/MA10/HA thật.
 function computeFullIndicators(bars) {
   const closes = bars.map((b) => b.c);
   const ema20 = ema(closes, 20);
   const rsi14 = rsi(closes, 14);
-  const { line, signal } = macd(closes);
-  return { closes, ema20, rsi14, macdLine: line, macdSignal: signal };
+  const rsiMa10 = sma(rsi14, 10);
+  const { haOpen, haClose } = heikinAshi(bars);
+  return { closes, ema20, rsi14, rsiMa10, haOpen, haClose };
 }
 function mapWeeklyToDaily(dBars, wBars, wUp, wDown) {
   const outUp = new Array(dBars.length).fill(false);
@@ -182,7 +202,7 @@ function pullbackStateAt(D, idx, lowIdx, highIdx, side) {
 
 function getCurrentPullback(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx) {
   const last = D.length - 1;
-  // Daily chỉ cần ≥1/3 chỉ báo (EMA20/RSI14/MACD) cùng chiều Weekly là đủ —
+  // Daily chỉ cần ≥1/3 chỉ báo (EMA20/RSI14 vs MA10/Heikin Ashi) cùng chiều Weekly là đủ —
   // dUp/dDown đã là OR sẵn của cả 3 chỉ báo, nên dùng thẳng, không cần thêm
   // điều kiện "0 chỉ báo ngược" hay tách chuẩn 1/2 gì nữa.
   let side = null;
@@ -485,7 +505,7 @@ function MiniCandleChart({ bars, ema20, width = 320, height = 150, refLines = []
 }
 
 // ============================================================================
-// COMPONENT: 1 dòng badge chỉ báo (EMA20 / RSI14 / MACD) — cho biết chỉ báo
+// COMPONENT: 1 dòng badge chỉ báo (EMA20 / RSI14 vs MA10 / Heikin Ashi) — cho biết chỉ báo
 // này đang ủng hộ chiều nào, có khớp với side hiện tại không.
 // ============================================================================
 function IndicatorBadge({ label, valueText, matches }) {
@@ -523,8 +543,8 @@ function DetailChartModal({ item, rawData, onClose }) {
   const wEmaSlice = wFull.ema20.slice(-NBARS_W);
 
   const li = D.length - 1, wi = W.length - 1;
-  const dClose = D[li].c, dEma = dFull.ema20[li], dRsi = dFull.rsi14[li], dMacd = dFull.macdLine[li], dSig = dFull.macdSignal[li];
-  const wClose = W[wi].c, wEma = wFull.ema20[wi], wRsi = wFull.rsi14[wi], wMacd = wFull.macdLine[wi], wSig = wFull.macdSignal[wi];
+  const dClose = D[li].c, dEma = dFull.ema20[li], dRsi = dFull.rsi14[li], dRsiMa = dFull.rsiMa10[li], dHaO = dFull.haOpen[li], dHaC = dFull.haClose[li];
+  const wClose = W[wi].c, wEma = wFull.ema20[wi], wRsi = wFull.rsi14[wi], wRsiMa = wFull.rsiMa10[wi], wHaO = wFull.haOpen[wi], wHaC = wFull.haClose[wi];
 
   const sideColor = cp.side === "long" ? C.long : C.short;
   const todayIdx = cp.streak - 1;
@@ -544,7 +564,7 @@ function DetailChartModal({ item, rawData, onClose }) {
     refLines.push({ value: ratioToPrice(ratio, cp), color: sideColor, label: `TP +${off}d`, dash: false });
   }
 
-  function Section({ title, bars, emaSlice, close, emaV, rsiV, macdV, sigV, refLines: rl, height }) {
+  function Section({ title, bars, emaSlice, close, emaV, rsiV, rsiMaV, haO, haC, refLines: rl, height }) {
     return (
       <div style={{ marginBottom: 16 }}>
         <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>{title}</div>
@@ -554,8 +574,9 @@ function DetailChartModal({ item, rawData, onClose }) {
         <div style={{ marginTop: 8 }}>
           <IndicatorBadge label={`Close (${close.toFixed(sym.includes("JPY") ? 3 : 5)}) vs EMA20 (${emaV.toFixed(sym.includes("JPY") ? 3 : 5)})`}
             valueText={close > emaV ? "Close > EMA20 (tăng)" : "Close < EMA20 (giảm)"} matches={true} />
-          <IndicatorBadge label="RSI14" valueText={`${rsiV.toFixed(1)} — ${rsiV > 50 ? "tăng (>50)" : "giảm (<50)"}`} matches={true} />
-          <IndicatorBadge label="MACD(12,26,9)" valueText={macdV > sigV ? "MACD > Signal (tăng)" : "MACD < Signal (giảm)"} matches={true} />
+          <IndicatorBadge label={`RSI14 (${rsiV.toFixed(1)}) vs MA10 (${rsiMaV !== null ? rsiMaV.toFixed(1) : "—"})`}
+            valueText={rsiMaV !== null ? (rsiV > rsiMaV ? "RSI > MA10 (tăng)" : "RSI < MA10 (giảm)") : "chưa đủ dữ liệu"} matches={true} />
+          <IndicatorBadge label="Heikin Ashi" valueText={haC > haO ? "Nến HA xanh (tăng)" : "Nến HA đỏ (giảm)"} matches={true} />
         </div>
       </div>
     );
@@ -592,11 +613,11 @@ function DetailChartModal({ item, rawData, onClose }) {
           </div>
         </div>
 
-        <Section title={`Daily (${NBARS_D} phiên gần nhất) — có vẽ sóng đẩy + TP`} bars={dSlice} emaSlice={dEmaSlice} close={dClose} emaV={dEma} rsiV={dRsi} macdV={dMacd} sigV={dSig} refLines={refLines} height={170} />
-        <Section title={`Weekly (${NBARS_W} tuần gần nhất)`} bars={wSlice} emaSlice={wEmaSlice} close={wClose} emaV={wEma} rsiV={wRsi} macdV={wMacd} sigV={wSig} />
+        <Section title={`Daily (${NBARS_D} phiên gần nhất) — có vẽ sóng đẩy + TP`} bars={dSlice} emaSlice={dEmaSlice} close={dClose} emaV={dEma} rsiV={dRsi} rsiMaV={dRsiMa} haO={dHaO} haC={dHaC} refLines={refLines} height={170} />
+        <Section title={`Weekly (${NBARS_W} tuần gần nhất)`} bars={wSlice} emaSlice={wEmaSlice} close={wClose} emaV={wEma} rsiV={wRsi} rsiMaV={wRsiMa} haO={wHaO} haC={wHaC} />
 
         <p style={{ fontSize: 11, color: C.textFaint, lineHeight: 1.55, marginTop: 4 }}>
-          App chỉ cần <b style={{ color: C.textDim }}>1 trong 3</b> chỉ báo (EMA20 / RSI14 / MACD) đồng thuận trên <b style={{ color: C.textDim }}>cả 2 khung</b> (Daily
+          App chỉ cần <b style={{ color: C.textDim }}>1 trong 3</b> chỉ báo (EMA20 / RSI14 so MA10 của chính nó / màu nến Heikin Ashi) đồng thuận trên <b style={{ color: C.textDim }}>cả 2 khung</b> (Daily
           &amp; Weekly) là đủ để xác nhận "cùng chiều". Trên chart Daily: đường vàng = EMA20, đường xám chấm chấm = đáy/đỉnh sóng đẩy (0%/100%), đường màu{" "}
           {cp.side === "long" ? "xanh" : "đỏ"} liền nét = các mức TP80 tương ứng thẻ "+1/+2/+3 ngày" trên card.
         </p>
@@ -810,7 +831,7 @@ export default function SongDayScreener() {
           <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 26, fontWeight: 700, letterSpacing: "-0.01em", margin: "6px 0 4px" }}>Sóng Đẩy</h1>
           <p style={{ color: C.textDim, fontSize: 13.5, lineHeight: 1.5, maxWidth: "56ch", margin: 0 }}>
             Quét <b style={{ color: C.text }}>22 cặp</b> (chính, chéo, phụ, crypto) tìm những cặp đang{" "}
-            <b style={{ color: C.text }}>Daily &amp; Weekly cùng chiều</b> (chỉ cần 1 trong 3 chỉ báo: EMA20/RSI14/MACD),{" "}
+            <b style={{ color: C.text }}>Daily &amp; Weekly cùng chiều</b> (chỉ cần 1 trong 3 chỉ báo: EMA20/RSI14 vs MA10/Heikin Ashi),{" "}
             <b style={{ color: C.text }}>nến hiện tại đang hồi ngược</b>, và <b style={{ color: C.text }}>target 80% (2 ngày) vẫn còn ở phía trước giá</b> —
             rồi tra lại xác
             suất lịch sử của chính cặp đó: hồi bao sâu, đạt lại target với xác suất 80% trong bao nhiêu ngày.
@@ -891,7 +912,7 @@ export default function SongDayScreener() {
 
         {status === "ready" && (
           <div style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
-            Phương pháp: Daily &amp; Weekly cùng chiều khi <b>≥1 trong 3</b> chỉ báo (EMA20/RSI14/MACD) đồng thuận trên mỗi khung — không cần cả 3 cùng lúc,
+            Phương pháp: Daily &amp; Weekly cùng chiều khi <b>≥1 trong 3</b> chỉ báo (Close so EMA20, RSI14 so MA10 của chính nó, màu nến Heikin Ashi) đồng thuận trên mỗi khung — không cần cả 3 cùng lúc,
             áp dụng như nhau cho cả Daily và Weekly. "Hồi" = số ngày kể từ ĐỈNH/ĐÁY pivot 3-nến gần nhất, <b>chỉ chấp nhận 1-2 ngày</b> — từ 3 ngày trở đi loại
             bỏ hoàn toàn do nguy cơ đảo chiều. Biên độ sóng đẩy đo từ swing-pivot liền trước tới đỉnh/đáy đó. Target 80% = percentile 20 của phân phối mở rộng
             lũy kế trong lịch sử của chính từng cặp. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.

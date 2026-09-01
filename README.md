@@ -1,10 +1,11 @@
 # Sóng Đẩy — Bộ lọc hồi kỹ thuật D+W
 
-Apps React (Vite) quét 22 cặp FX/crypto, lọc ra những cặp đang **Daily & Weekly
-cùng chiều xu hướng** (≥1 trong 3 chỉ báo: EMA20 / RSI14 / MACD) **và** nến
-hiện tại đang hồi ngược màu — rồi backtest lại chính lịch sử của từng cặp đó
-để trả lời: trong 2/3/4 ngày kể từ lúc hồi, 80% trường hợp trong quá khứ giá
-đã đạt tới mức nào.
+Apps React (Vite) quét 18 cặp FX/crypto (22 cặp gốc, trừ 4 cặp sàn không hỗ
+trợ: USD/SEK, USD/MXN, USD/ZAR, USD/NOK), lọc ra những cặp đang **Daily &
+Weekly cùng chiều xu hướng** (≥1 trong 3 chỉ báo: EMA20 / RSI14 so MA10 / màu
+nến Heikin Ashi) **và** đang hồi đúng 1-2 ngày kể từ đỉnh/đáy gần nhất — rồi
+backtest lại chính lịch sử của từng cặp đó để trả lời: trong N ngày tới, 80%
+trường hợp trong quá khứ giá đã đạt tới mức nào.
 
 ## Chạy thử ngay (cách nhanh nhất)
 
@@ -63,15 +64,16 @@ với repo gốc `fx-cmt-app`.
 ## Phương pháp tính (tóm tắt)
 
 - **Xu hướng D/W**: chỉ cần **1 trong 3** chỉ báo xác nhận là đủ (không cần
-  cả 3 đồng thuận cùng lúc):
+  cả 3 đồng thuận cùng lúc), áp dụng như nhau cho cả Daily và Weekly:
   - Close so với EMA20, hoặc
-  - RSI14 > 50 (tăng) / < 50 (giảm), hoặc
-  - MACD(12,26,9) cùng chiều so với đường Signal.
+  - RSI14 so với **MA10 của chính nó** (không dùng mốc 50 cố định — RSI trên/
+    dưới MA10 phản ánh đúng động lượng đang đổi chiều hơn), hoặc
+  - Màu nến **Heikin Ashi** (HA Close > HA Open = tăng) — phản ứng nhanh hơn
+    nhiều so với chờ MACD cắt Signal.
 - **"Hồi"**: số ngày kể từ **đỉnh/đáy pivot 3-nến gần nhất** (không phải đếm
   chuỗi nến ngược màu liên tiếp — 1 nến ngược màu xen giữa không làm reset về
-  1 ngày nữa). Tối đa **15 ngày** mới còn tính là hồi ngắn hạn; quá mốc đó
-  (VD giá đang phục hồi dần từ 1 cú sập mạnh nhưng chưa lập đỉnh mới) sẽ không
-  được coi là "đang hồi" nữa.
+  1 ngày nữa). **Chỉ chấp nhận 1-2 ngày** — từ 3 ngày trở đi loại bỏ hoàn toàn
+  do nguy cơ đảo chiều.
 - **Sóng đẩy (impulse)**: đo từ pivot low/high (nếu Long/Short) liền trước đó
   tới đỉnh/đáy vừa xác định ở trên.
 - **Target 80%**: với mỗi cặp + mỗi chiều Long/Short, gộp **toàn bộ lịch sử**
