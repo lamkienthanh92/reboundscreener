@@ -70,12 +70,14 @@ với repo gốc `fx-cmt-app`.
     dưới MA10 phản ánh đúng động lượng đang đổi chiều hơn), hoặc
   - Màu nến **Heikin Ashi** (HA Close > HA Open = tăng) — phản ứng nhanh hơn
     nhiều so với chờ MACD cắt Signal.
-- **"Hồi"**: số ngày kể từ **đỉnh/đáy pivot 3-nến gần nhất** (không phải đếm
-  chuỗi nến ngược màu liên tiếp — 1 nến ngược màu xen giữa không làm reset về
-  1 ngày nữa). **Chỉ chấp nhận 1-3 ngày** — từ 4 ngày trở đi loại bỏ hoàn toàn
-  do nguy cơ đảo chiều.
-- **Sóng đẩy (impulse)**: đo từ pivot low/high (nếu Long/Short) liền trước đó
-  tới đỉnh/đáy vừa xác định ở trên.
+- **Sóng đẩy**: chuỗi **≥2 nến liên tiếp cùng chiều Weekly** (1 nến ngược
+  màu đơn lẻ xen giữa không tính là chuỗi mới, chỉ là nhiễu). Đáy sóng đẩy mở
+  rộng bao gồm đáy của sóng ngược chiều liền trước (nếu thấp hơn); đỉnh sóng
+  đẩy mở rộng bao gồm đỉnh của nến đảo chiều đầu tiên ngay sau chuỗi (nếu cao
+  hơn — trường hợp wick vượt lên trước khi đóng cửa ngược hướng).
+- **"Hồi"**: số ngày kể từ ngày cuối cùng của chuỗi sóng đẩy đó (nến ngược
+  chiều đầu tiên = ngày 1 của hồi). **Chỉ chấp nhận 1-3 ngày** — từ 4 ngày
+  trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều.
 - **Target 80%**: với mỗi cặp + mỗi chiều Long/Short, gộp **toàn bộ lịch sử**
   các lần từng khớp đúng mẫu hình này (D+W cùng chiều rồi hồi — thường vài
   trăm lần trên ~9-10 năm dữ liệu), rồi với mỗi mốc N ngày kể từ lúc bắt đầu

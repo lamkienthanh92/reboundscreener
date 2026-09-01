@@ -24,8 +24,6 @@ const CAT_ORDER = ["Chính", "Chéo", "Phụ", "Crypto/Hàng hóa"];
 const EXCLUDED_SYMBOLS = ["USD/SEK", "USD/MXN", "USD/ZAR", "USD/NOK"];
 
 const NMAX = 20; // đủ dài để cover các đợt hồi kéo dài nhiều ngày
-const LOOKBACK = 40;
-const PIVWIN = 3;
 
 // ============================================================================
 // INDICATORS
@@ -122,20 +120,6 @@ function mapWeeklyToDaily(dBars, wBars, wUp, wDown) {
   }
   return { outUp, outDown };
 }
-function findPivots(bars, win) {
-  const lowIdx = [], highIdx = [];
-  for (let i = win; i < bars.length - win; i++) {
-    let isLow = true, isHigh = true;
-    const lo = bars[i].l, hi = bars[i].h;
-    for (let j = i - win; j <= i + win; j++) {
-      if (bars[j].l < lo) isLow = false;
-      if (bars[j].h > hi) isHigh = false;
-    }
-    if (isLow) lowIdx.push(i);
-    if (isHigh) highIdx.push(i);
-  }
-  return { lowIdx, highIdx };
-}
 function percentile(arr, p) {
   if (!arr.length) return null;
   const a = [...arr].sort((x, y) => x - y);
@@ -146,98 +130,101 @@ function percentile(arr, p) {
 }
 
 // ============================================================================
-// TRẠNG THÁI HỒI tại 1 ngày bất kỳ (idx) — đỉnh/đáy = PIVOT 3-NẾN GẦN NHẤT
-// (đã có sẵn trong lowIdx/highIdx), KHÔNG dùng cửa sổ N-ngày cố định. Cách này
-// tránh 2 lỗi: (1) màu nến ngược xen giữa làm reset streak về 1 dù giá vẫn xa
-// đỉnh; (2) cửa sổ cố định bắt nhầm đỉnh cũ trước 1 cú sập mạnh làm mốc, gây
-// streak/retracement vô lý (300%+, hàng chục ngày) khi giá đã lập đỉnh MỚI gần
-// hơn (thấp hơn) sau cú sập. "streak" = số ngày kể từ pivot gần nhất đó.
+// SÓNG ĐẨY & HỒI — định nghĩa theo đúng yêu cầu: KHÔNG dùng pivot 3-nến.
+// "Sóng đẩy" = chuỗi NẾN CÙNG CHIỀU WEEKLY (≥2 nến liên tiếp — 1 nến ngược
+// màu đơn lẻ xen giữa không tính là 1 chuỗi mới, chỉ là nhiễu). "Hồi" bắt đầu
+// tính từ nến ngược chiều ĐẦU TIÊN ngay sau khi chuỗi đó kết thúc.
+// - Đáy sóng đẩy: thấp nhất trong chuỗi, MỞ RỘNG bao gồm đáy của sóng ngược
+//   chiều liền trước đó (nếu thấp hơn).
+// - Đỉnh sóng đẩy: cao nhất trong chuỗi, MỞ RỘNG bao gồm đỉnh của nến đảo
+//   chiều đầu tiên ngay sau chuỗi (nếu cao hơn — trường hợp nến đảo chiều có
+//   wick vượt qua chuỗi trước khi đóng cửa ngược hướng).
+// "streak" = số ngày kể từ ngày cuối cùng của chuỗi sóng đẩy đó.
 // ============================================================================
 const MAX_STREAK = 3; // chỉ chấp nhận hồi 1-3 ngày; từ 4 ngày trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều
 
-function pullbackStateAt(D, idx, lowIdx, highIdx, side) {
-  if (side === "long") {
-    const priorHighs = highIdx.filter((p) => p < idx);
-    if (!priorHighs.length) return null;
-    const peakIdx = priorHighs[priorHighs.length - 1];
-    const peakVal = D[peakIdx].h;
-    const streak = idx - peakIdx;
-    if (streak > MAX_STREAK) return null;
-    const priorLows = lowIdx.filter((p) => p < peakIdx && p >= peakIdx - LOOKBACK);
-    if (!priorLows.length) return null;
-    const pIdx = priorLows[priorLows.length - 1];
-    if (peakIdx - 1 <= pIdx) return null;
-    const plow = D[pIdx].l;
-    const impulse = peakVal - plow;
-    if (impulse <= 0) return null;
-    let curMin = Infinity, curMax = -Infinity;
-    for (let j = peakIdx + 1; j <= idx; j++) { curMin = Math.min(curMin, D[j].l); curMax = Math.max(curMax, D[j].h); }
-    const retr = (peakVal - curMin) / impulse;
-    // extSoFar = mức mở rộng CAO NHẤT giá đã từng chạm tới (không chỉ giá đóng
-    // cửa hôm nay) kể từ đỉnh — dùng để biết target đã bị "chạm" thật chưa,
-    // kể cả khi giá đã lùi lại sau khi chạm.
-    const extSoFar = (curMax - plow) / impulse;
-    return { side, streak, retr, extSoFar, impulse, base: plow, peakIdx, peakVal };
-  } else {
-    const priorLows = lowIdx.filter((p) => p < idx);
-    if (!priorLows.length) return null;
-    const troughIdx = priorLows[priorLows.length - 1];
-    const troughVal = D[troughIdx].l;
-    const streak = idx - troughIdx;
-    if (streak > MAX_STREAK) return null;
-    const priorHighs = highIdx.filter((p) => p < troughIdx && p >= troughIdx - LOOKBACK);
-    if (!priorHighs.length) return null;
-    const pIdx = priorHighs[priorHighs.length - 1];
-    if (troughIdx - 1 <= pIdx) return null;
-    const phigh = D[pIdx].h;
-    const impulse = phigh - troughVal;
-    if (impulse <= 0) return null;
-    let curMax = -Infinity, curMin = Infinity;
-    for (let j = troughIdx + 1; j <= idx; j++) { curMax = Math.max(curMax, D[j].h); curMin = Math.min(curMin, D[j].l); }
-    const retr = (curMax - troughVal) / impulse;
-    const extSoFar = (phigh - curMin) / impulse;
-    return { side, streak, retr, extSoFar, impulse, base: phigh, peakIdx: troughIdx, peakVal: troughVal };
-  }
+function matchesSide(D, i, side) {
+  return side === "long" ? D[i].c > D[i].o : D[i].c < D[i].o;
 }
 
-function getCurrentPullback(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx) {
+function pullbackStateAt(D, idx, side) {
+  // Hôm nay + hôm qua đều cùng chiều -> đang trong sóng đẩy, chưa hồi.
+  if (matchesSide(D, idx, side) && idx > 0 && matchesSide(D, idx - 1, side)) return null;
+
+  // Quét ngược tìm ngày cuối cùng của chuỗi sóng đẩy gần nhất (2 nến liên tiếp cùng chiều).
+  let j = idx;
+  while (j >= 1) {
+    if (matchesSide(D, j, side) && matchesSide(D, j - 1, side)) break;
+    j--;
+  }
+  if (j < 1) return null;
+  const impulseEndIdx = j;
+  const streak = idx - impulseEndIdx;
+  if (streak < 1 || streak > MAX_STREAK) return null;
+
+  // Mở rộng lùi để lấy trọn chuỗi (tìm điểm bắt đầu chuỗi).
+  let impulseStartIdx = impulseEndIdx;
+  while (impulseStartIdx - 1 >= 0 && matchesSide(D, impulseStartIdx - 1, side)) impulseStartIdx--;
+
+  let impulseLow = Infinity, impulseHigh = -Infinity;
+  for (let i = impulseStartIdx; i <= impulseEndIdx; i++) { impulseLow = Math.min(impulseLow, D[i].l); impulseHigh = Math.max(impulseHigh, D[i].h); }
+
+  // Đáy: mở rộng bao gồm đáy của sóng ngược chiều liền trước impulseStartIdx (nếu thấp hơn).
+  let base = impulseLow;
+  const prevIdx = impulseStartIdx - 1;
+  if (prevIdx >= 0 && !matchesSide(D, prevIdx, side)) {
+    let k = prevIdx;
+    while (k - 1 >= 0 && !matchesSide(D, k - 1, side)) k--;
+    let prevWaveLow = Infinity;
+    for (let i = k; i <= prevIdx; i++) prevWaveLow = Math.min(prevWaveLow, D[i].l);
+    base = Math.min(base, prevWaveLow);
+  }
+
+  // Đỉnh: mở rộng bao gồm đỉnh của nến đảo chiều đầu tiên (nếu cao hơn).
+  const firstReversalIdx = impulseEndIdx + 1;
+  const peakVal = Math.max(impulseHigh, D[firstReversalIdx].h);
+
+  const impulse = peakVal - base;
+  if (impulse <= 0) return null;
+
+  let curMin = Infinity, curMax = -Infinity;
+  for (let i = firstReversalIdx; i <= idx; i++) { curMin = Math.min(curMin, D[i].l); curMax = Math.max(curMax, D[i].h); }
+  const retr = (peakVal - curMin) / impulse;
+  // extSoFar = mức mở rộng CAO NHẤT giá đã từng chạm tới (không chỉ giá đóng
+  // cửa hôm nay) kể từ khi hồi bắt đầu — dùng để biết target đã bị "chạm"
+  // thật chưa, kể cả khi giá đã lùi lại sau khi chạm.
+  const extSoFar = (curMax - base) / impulse;
+
+  return { side, streak, retr, extSoFar, impulse, base, peakVal, peakIdx: impulseEndIdx };
+}
+
+function getCurrentPullback(D, dUp, dDown, wUpM, wDownM) {
   const last = D.length - 1;
-  // Daily chỉ cần ≥1/3 chỉ báo (EMA20/RSI14 vs MA10/Heikin Ashi) cùng chiều Weekly là đủ —
-  // dUp/dDown đã là OR sẵn của cả 3 chỉ báo, nên dùng thẳng, không cần thêm
-  // điều kiện "0 chỉ báo ngược" hay tách chuẩn 1/2 gì nữa.
+  // Daily chỉ cần ≥1/3 chỉ báo (EMA20/RSI14 vs MA10/Heikin Ashi) cùng chiều Weekly là đủ.
   let side = null;
   if (dUp[last] && wUpM[last]) side = "long";
   else if (dDown[last] && wDownM[last]) side = "short";
   if (!side) return null;
-  const st = pullbackStateAt(D, last, lowIdx, highIdx, side);
+  const st = pullbackStateAt(D, last, side);
   if (!st) return null;
   return { ...st, entryDate: D[st.peakIdx + 1].d, lastDate: D[last].d, lastClose: D[last].c };
 }
 
 // ============================================================================
-// BACKTEST: mẫu = NGÀY ĐẦU TIÊN rời đỉnh/đáy (streak===1 tại ngày đó, tức hôm
-// trước chính là đỉnh/đáy). extByDay[m] = mức giá CỦA RIÊNG ngày (m+1) kể từ
-// đỉnh/đáy đó (KHÔNG cộng dồn/running-max) — tra thẳng bằng "streak-1" ra
-// đúng vị trí hôm nay.
-//
-// QUAN TRỌNG: trước đây dùng running-max (mức cao/thấp nhất TỪNG chạm tới,
-// cộng dồn theo thời gian) — gây sai lệch: ngày 1 (ngay sau đỉnh) thường vẫn
-// còn khá gần đỉnh, nên MỘT KHI ngày 1 đã chạm mức cao, giá trị đó "mắc kẹt"
-// cho MỌI ngày sau (vì max không bao giờ giảm), dù giá thực tế các ngày kế
-// tiếp tiếp tục giảm sâu hơn nhiều. Hệ quả: target80 luôn hiện gần đỉnh cũ dù
-// xác suất thực tế không cao — đúng như quan sát. Sửa: dùng giá trị CỦA RIÊNG
-// từng ngày, phản ánh đúng "ngày đó giá đang ở đâu", có thể thấp nếu đang hồi
-// sâu — đúng bản chất thống kê.
+// BACKTEST: mẫu = NGÀY ĐẦU TIÊN rời sóng đẩy (streak===1 tại ngày đó, tức hôm
+// trước chính là ngày cuối chuỗi). extByDay[m] = mức giá CỦA RIÊNG ngày (m+1)
+// kể từ đó (KHÔNG cộng dồn/running-max) — tra thẳng bằng "streak-1" ra đúng
+// vị trí hôm nay.
 // ============================================================================
-function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
+function runBacktest(D, dUp, dDown, wUpM, wDownM, side) {
   const extByDayRows = [];
   for (let i = 60; i < D.length; i++) {
     // Candidate: Daily (≥1/3 chỉ báo) VÀ Weekly (≥1/3 chỉ báo) cùng chiều —
     // khớp đúng điều kiện live ở trên.
     if (side === "long") { if (!(dUp[i] && wUpM[i])) continue; }
     else { if (!(dDown[i] && wDownM[i])) continue; }
-    const st = pullbackStateAt(D, i, lowIdx, highIdx, side);
-    if (!st || st.streak !== 1) continue; // chỉ lấy ngày đầu tiên rời đỉnh/đáy
+    const st = pullbackStateAt(D, i, side);
+    if (!st || st.streak !== 1) continue; // chỉ lấy ngày đầu tiên rời sóng đẩy
     if (i + NMAX - 1 >= D.length) continue;
 
     const extByDay = [];
@@ -250,7 +237,7 @@ function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
   }
 
   // Target80ByDay[k] = mức mà 80% xác suất giá ĐANG Ở (đúng ngày đó, không
-  // cộng dồn) qua (k+1) ngày kể từ đỉnh/đáy (percentile thứ 20).
+  // cộng dồn) qua (k+1) ngày kể từ sóng đẩy (percentile thứ 20).
   const target80ByDay = [];
   for (let k = 0; k < NMAX; k++) {
     const vals = extByDayRows.map((r) => r[k]);
@@ -686,10 +673,9 @@ function analyzeSymbol(D, W) {
   const dInd = buildIndicators(D);
   const wInd = buildIndicators(W);
   const { outUp: wUpM, outDown: wDownM } = mapWeeklyToDaily(D, W, wInd.up, wInd.down);
-  const { lowIdx, highIdx } = findPivots(D, PIVWIN);
-  const cp = getCurrentPullback(D, dInd.up, dInd.down, wUpM, wDownM, lowIdx, highIdx);
+  const cp = getCurrentPullback(D, dInd.up, dInd.down, wUpM, wDownM);
   if (!cp) return { cp: null, bt: null, valid: false };
-  const bt = runBacktest(D, dInd.up, dInd.down, wUpM, wDownM, lowIdx, highIdx, cp.side);
+  const bt = runBacktest(D, dInd.up, dInd.down, wUpM, wDownM, cp.side);
   // Kiểm tra target NGÀY MAI (vị trí streak trong mảng 0-based) đã bị giá
   // CHẠM TỚI chưa — dùng extSoFar (mức cao/thấp nhất giá ĐÃ TỪNG chạm kể từ
   // đỉnh/đáy), KHÔNG dùng giá đóng cửa cuối cùng. Nếu chỉ so giá đóng cửa,
@@ -919,8 +905,8 @@ export default function SongDayScreener() {
         {status === "ready" && (
           <div style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
             Phương pháp: Daily &amp; Weekly cùng chiều khi <b>≥1 trong 3</b> chỉ báo (Close so EMA20, RSI14 so MA10 của chính nó, màu nến Heikin Ashi) đồng thuận trên mỗi khung — không cần cả 3 cùng lúc,
-            áp dụng như nhau cho cả Daily và Weekly. "Hồi" = số ngày kể từ ĐỈNH/ĐÁY pivot 3-nến gần nhất, <b>chỉ chấp nhận 1-3 ngày</b> — từ 4 ngày trở đi loại
-            bỏ hoàn toàn do nguy cơ đảo chiều. Biên độ sóng đẩy đo từ swing-pivot liền trước tới đỉnh/đáy đó. Target 80% = percentile 20 của phân phối mở rộng
+            áp dụng như nhau cho cả Daily và Weekly. "Sóng đẩy" = chuỗi ≥2 nến liên tiếp cùng chiều Weekly; "Hồi" bắt đầu từ nến ngược chiều đầu tiên sau chuỗi đó,
+            <b>chỉ chấp nhận 1-3 ngày</b> — từ 4 ngày trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều. Target 80% = percentile 20 của phân phối mở rộng
             lũy kế trong lịch sử của chính từng cặp. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.
           </div>
         )}
