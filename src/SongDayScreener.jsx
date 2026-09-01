@@ -80,6 +80,15 @@ function buildIndicators(bars) {
   );
   return { up, down };
 }
+// Bản đầy đủ (trả nguyên chuỗi số, không rút gọn thành up/down) — dùng cho
+// modal xem chart chi tiết, để hiển thị đúng giá trị EMA20/RSI14/MACD thật.
+function computeFullIndicators(bars) {
+  const closes = bars.map((b) => b.c);
+  const ema20 = ema(closes, 20);
+  const rsi14 = rsi(closes, 14);
+  const { line, signal } = macd(closes);
+  return { closes, ema20, rsi14, macdLine: line, macdSignal: signal };
+}
 function mapWeeklyToDaily(dBars, wBars, wUp, wDown) {
   const outUp = new Array(dBars.length).fill(false);
   const outDown = new Array(dBars.length).fill(false);
@@ -124,7 +133,7 @@ function percentile(arr, p) {
 // streak/retracement vô lý (300%+, hàng chục ngày) khi giá đã lập đỉnh MỚI gần
 // hơn (thấp hơn) sau cú sập. "streak" = số ngày kể từ pivot gần nhất đó.
 // ============================================================================
-const MAX_STREAK = 15; // hồi quá 15 ngày không còn là pullback ngắn hạn nữa
+const MAX_STREAK = 2; // chỉ chấp nhận hồi 1-2 ngày; từ 3 ngày trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều
 
 function pullbackStateAt(D, idx, lowIdx, highIdx, side) {
   if (side === "long") {
@@ -141,10 +150,14 @@ function pullbackStateAt(D, idx, lowIdx, highIdx, side) {
     const plow = D[pIdx].l;
     const impulse = peakVal - plow;
     if (impulse <= 0) return null;
-    let curMin = Infinity;
-    for (let j = peakIdx + 1; j <= idx; j++) curMin = Math.min(curMin, D[j].l);
+    let curMin = Infinity, curMax = -Infinity;
+    for (let j = peakIdx + 1; j <= idx; j++) { curMin = Math.min(curMin, D[j].l); curMax = Math.max(curMax, D[j].h); }
     const retr = (peakVal - curMin) / impulse;
-    return { side, streak, retr, impulse, base: plow, peakIdx, peakVal };
+    // extSoFar = mức mở rộng CAO NHẤT giá đã từng chạm tới (không chỉ giá đóng
+    // cửa hôm nay) kể từ đỉnh — dùng để biết target đã bị "chạm" thật chưa,
+    // kể cả khi giá đã lùi lại sau khi chạm.
+    const extSoFar = (curMax - plow) / impulse;
+    return { side, streak, retr, extSoFar, impulse, base: plow, peakIdx, peakVal };
   } else {
     const priorLows = lowIdx.filter((p) => p < idx);
     if (!priorLows.length) return null;
@@ -159,15 +172,19 @@ function pullbackStateAt(D, idx, lowIdx, highIdx, side) {
     const phigh = D[pIdx].h;
     const impulse = phigh - troughVal;
     if (impulse <= 0) return null;
-    let curMax = -Infinity;
-    for (let j = troughIdx + 1; j <= idx; j++) curMax = Math.max(curMax, D[j].h);
+    let curMax = -Infinity, curMin = Infinity;
+    for (let j = troughIdx + 1; j <= idx; j++) { curMax = Math.max(curMax, D[j].h); curMin = Math.min(curMin, D[j].l); }
     const retr = (curMax - troughVal) / impulse;
-    return { side, streak, retr, impulse, base: phigh, peakIdx: troughIdx, peakVal: troughVal };
+    const extSoFar = (phigh - curMin) / impulse;
+    return { side, streak, retr, extSoFar, impulse, base: phigh, peakIdx: troughIdx, peakVal: troughVal };
   }
 }
 
 function getCurrentPullback(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx) {
   const last = D.length - 1;
+  // Daily chỉ cần ≥1/3 chỉ báo (EMA20/RSI14/MACD) cùng chiều Weekly là đủ —
+  // dUp/dDown đã là OR sẵn của cả 3 chỉ báo, nên dùng thẳng, không cần thêm
+  // điều kiện "0 chỉ báo ngược" hay tách chuẩn 1/2 gì nữa.
   let side = null;
   if (dUp[last] && wUpM[last]) side = "long";
   else if (dDown[last] && wDownM[last]) side = "short";
@@ -186,6 +203,8 @@ function getCurrentPullback(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx) {
 function runBacktest(D, dUp, dDown, wUpM, wDownM, lowIdx, highIdx, side) {
   const extByDayRows = [];
   for (let i = 60; i < D.length; i++) {
+    // Candidate: Daily (≥1/3 chỉ báo) VÀ Weekly (≥1/3 chỉ báo) cùng chiều —
+    // khớp đúng điều kiện live ở trên.
     if (side === "long") { if (!(dUp[i] && wUpM[i])) continue; }
     else { if (!(dDown[i] && wDownM[i])) continue; }
     const st = pullbackStateAt(D, i, lowIdx, highIdx, side);
@@ -286,7 +305,7 @@ function ImpulseScale({ retr, side }) {
 // ============================================================================
 // COMPONENT: one pair card
 // ============================================================================
-function PairCard({ item, open, onToggle }) {
+function PairCard({ item, open, onToggle, onInfo }) {
   const { sym, cp, bt } = item;
   const sideColor = cp.side === "long" ? C.long : C.short;
   const sideSoft = cp.side === "long" ? C.longSoft : C.shortSoft;
@@ -316,6 +335,17 @@ function PairCard({ item, open, onToggle }) {
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, fontWeight: 700, padding: "2.5px 7px", borderRadius: 5, letterSpacing: "0.03em", background: sideSoft, color: sideColor }}>
             {cp.side === "long" ? "LONG" : "SHORT"}
           </span>
+          <button
+            onClick={(e) => { e.stopPropagation(); onInfo(item); }}
+            style={{
+              width: 18, height: 18, borderRadius: "50%", border: `1px solid ${C.textFaint}`,
+              background: "transparent", color: C.textFaint, fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+              display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, flexShrink: 0,
+            }}
+            title="Xem chart Weekly + Daily"
+          >
+            !
+          </button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: C.textFaint, whiteSpace: "nowrap" }}>
@@ -399,6 +429,182 @@ function PairCard({ item, open, onToggle }) {
   );
 }
 
+// ============================================================================
+// COMPONENT: mini candlestick chart (SVG thuần, không cần thư viện ngoài) —
+// vẽ nến High/Low/Open/Close + đường EMA20 overlay + các đường tham chiếu
+// (đáy/đỉnh sóng đẩy, mức TP) cho 1 timeframe.
+// ============================================================================
+function MiniCandleChart({ bars, ema20, width = 320, height = 150, refLines = [] }) {
+  if (!bars || bars.length < 2) return null;
+  const n = bars.length;
+  const padL = 2, padR = 46, padT = 8, padB = 4; // padR rộng hơn để chừa chỗ ghi nhãn giá bên phải
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+
+  let lo = Infinity, hi = -Infinity;
+  for (const b of bars) { lo = Math.min(lo, b.l); hi = Math.max(hi, b.h); }
+  for (const v of ema20) { if (v !== null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } }
+  for (const r of refLines) { if (r.value !== null && r.value !== undefined && isFinite(r.value)) { lo = Math.min(lo, r.value); hi = Math.max(hi, r.value); } }
+  const pad2 = (hi - lo) * 0.04 || 1; // chừa lề trên/dưới 4% để nhãn không dính mép
+  lo -= pad2; hi += pad2;
+  const range = hi - lo || 1;
+  const y = (v) => padT + (1 - (v - lo) / range) * plotH;
+  const slot = plotW / n;
+  const x = (i) => padL + i * slot + slot / 2;
+  const candleW = Math.max(1.5, slot * 0.6);
+
+  const emaPoints = ema20.map((v, i) => (v !== null ? `${x(i).toFixed(1)},${y(v).toFixed(1)}` : null)).filter(Boolean).join(" ");
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} style={{ display: "block", overflow: "visible" }}>
+      {bars.map((b, i) => {
+        const up = b.c >= b.o;
+        const color = up ? C.long : C.short;
+        const bodyTop = y(Math.max(b.o, b.c));
+        const bodyBot = y(Math.min(b.o, b.c));
+        return (
+          <g key={i}>
+            <line x1={x(i)} x2={x(i)} y1={y(b.h)} y2={y(b.l)} stroke={color} strokeWidth={1} />
+            <rect x={x(i) - candleW / 2} y={bodyTop} width={candleW} height={Math.max(1, bodyBot - bodyTop)} fill={color} />
+          </g>
+        );
+      })}
+      {emaPoints && <polyline points={emaPoints} fill="none" stroke={C.amber} strokeWidth={1.3} opacity={0.85} />}
+      {refLines.map((r, idx) => {
+        if (r.value === null || r.value === undefined || !isFinite(r.value)) return null;
+        const yy = y(r.value);
+        return (
+          <g key={idx}>
+            <line x1={padL} x2={width - padR} y1={yy} y2={yy} stroke={r.color} strokeWidth={1} strokeDasharray={r.dash ? "3,3" : undefined} opacity={0.85} />
+            <text x={width - padR + 4} y={yy + 3} fontSize={8.5} fontFamily="'JetBrains Mono', monospace" fill={r.color}>{r.label}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ============================================================================
+// COMPONENT: 1 dòng badge chỉ báo (EMA20 / RSI14 / MACD) — cho biết chỉ báo
+// này đang ủng hộ chiều nào, có khớp với side hiện tại không.
+// ============================================================================
+function IndicatorBadge({ label, valueText, matches }) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      padding: "5px 8px", borderRadius: 7, background: matches ? C.longSoft : C.bg,
+      border: `1px solid ${matches ? C.long + "55" : C.borderSoft}`, marginBottom: 5,
+    }}>
+      <span style={{ fontSize: 10.5, color: C.textDim }}>{label}</span>
+      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, color: matches ? C.long : C.textFaint, fontWeight: matches ? 700 : 400 }}>
+        {valueText} {matches ? "✓" : ""}
+      </span>
+    </div>
+  );
+}
+
+// ============================================================================
+// COMPONENT: modal xem chi tiết Weekly + Daily kèm 3 chỉ báo + đường tham
+// chiếu sóng đẩy (đáy/đỉnh, mức TP) — để kiểm chứng trực quan D+W có thật sự
+// cùng chiều không, hồi đã tới đâu, và TP nên đặt ở đâu.
+// ============================================================================
+function DetailChartModal({ item, rawData, onClose }) {
+  if (!item || !rawData) return null;
+  const { sym, cp, bt } = item;
+  const D = rawData.D[sym], W = rawData.W[sym];
+
+  const dFull = computeFullIndicators(D);
+  const wFull = computeFullIndicators(W);
+
+  const NBARS_D = 45, NBARS_W = 26;
+  const dSlice = D.slice(-NBARS_D);
+  const wSlice = W.slice(-NBARS_W);
+  const dEmaSlice = dFull.ema20.slice(-NBARS_D);
+  const wEmaSlice = wFull.ema20.slice(-NBARS_W);
+
+  const li = D.length - 1, wi = W.length - 1;
+  const dClose = D[li].c, dEma = dFull.ema20[li], dRsi = dFull.rsi14[li], dMacd = dFull.macdLine[li], dSig = dFull.macdSignal[li];
+  const wClose = W[wi].c, wEma = wFull.ema20[wi], wRsi = wFull.rsi14[wi], wMacd = wFull.macdLine[wi], wSig = wFull.macdSignal[wi];
+
+  const sideColor = cp.side === "long" ? C.long : C.short;
+  const todayIdx = cp.streak - 1;
+
+  // Đường tham chiếu vẽ đè lên chart DAILY: đáy/đỉnh sóng đẩy (gốc so sánh) +
+  // 3 mức TP80 (+1/+2/+3 ngày kể từ hôm nay) — đúng những gì card đang hiển thị.
+  const baseLabel = cp.side === "long" ? "đáy sóng đẩy" : "đỉnh sóng đẩy";
+  const peakLabel = cp.side === "long" ? "đỉnh (đang hồi từ đây)" : "đáy (đang hồi từ đây)";
+  const refLines = [
+    { value: cp.base, color: C.textFaint, label: `0% ${baseLabel}`, dash: true },
+    { value: cp.peakVal, color: C.amber, label: `100% ${peakLabel}`, dash: true },
+  ];
+  for (const off of [1, 2, 3]) {
+    const idx = todayIdx + off;
+    const ratio = idx < NMAX ? bt.target80ByDay[idx] : null;
+    if (ratio === null) continue;
+    refLines.push({ value: ratioToPrice(ratio, cp), color: sideColor, label: `TP +${off}d`, dash: false });
+  }
+
+  function Section({ title, bars, emaSlice, close, emaV, rsiV, macdV, sigV, refLines: rl, height }) {
+    return (
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>{title}</div>
+        <div style={{ background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 10, padding: "6px 4px 2px" }}>
+          <MiniCandleChart bars={bars} ema20={emaSlice} refLines={rl || []} height={height} />
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <IndicatorBadge label={`Close (${close.toFixed(sym.includes("JPY") ? 3 : 5)}) vs EMA20 (${emaV.toFixed(sym.includes("JPY") ? 3 : 5)})`}
+            valueText={close > emaV ? "Close > EMA20 (tăng)" : "Close < EMA20 (giảm)"} matches={true} />
+          <IndicatorBadge label="RSI14" valueText={`${rsiV.toFixed(1)} — ${rsiV > 50 ? "tăng (>50)" : "giảm (<50)"}`} matches={true} />
+          <IndicatorBadge label="MACD(12,26,9)" valueText={macdV > sigV ? "MACD > Signal (tăng)" : "MACD < Signal (giảm)"} matches={true} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 50, display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: C.panel, borderTop: `1px solid ${C.border}`, borderRadius: "18px 18px 0 0",
+          width: "100%", maxWidth: 480, maxHeight: "88vh", overflowY: "auto", padding: "16px 16px 24px",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 17 }}>{sym}</span>
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, fontWeight: 700, padding: "2.5px 7px", borderRadius: 5, background: cp.side === "long" ? C.longSoft : C.shortSoft, color: sideColor }}>
+              {cp.side === "long" ? "LONG" : "SHORT"}
+            </span>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: C.textFaint, fontSize: 20, cursor: "pointer", lineHeight: 1 }}>×</button>
+        </div>
+
+        {/* Tóm tắt sóng đẩy hiện tại */}
+        <div style={{ background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
+            Sóng đẩy: <b style={{ color: C.text }}>{fmtPrice(cp.base, sym)}</b> ({baseLabel}) → <b style={{ color: C.text }}>{fmtPrice(cp.peakVal, sym)}</b> ({peakLabel}),
+            đỉnh/đáy ngày <b style={{ color: C.text }}>{D[cp.peakIdx].d}</b>. Đang hồi <b style={{ color: C.amber }}>{cp.streak} ngày</b>, đã chạm{" "}
+            <b style={{ color: C.amber }}>{fmtPct(cp.retr)}</b> biên độ. Giá đóng cửa gần nhất <b style={{ color: C.text }}>{fmtPrice(dClose, sym)}</b>.
+          </div>
+        </div>
+
+        <Section title={`Daily (${NBARS_D} phiên gần nhất) — có vẽ sóng đẩy + TP`} bars={dSlice} emaSlice={dEmaSlice} close={dClose} emaV={dEma} rsiV={dRsi} macdV={dMacd} sigV={dSig} refLines={refLines} height={170} />
+        <Section title={`Weekly (${NBARS_W} tuần gần nhất)`} bars={wSlice} emaSlice={wEmaSlice} close={wClose} emaV={wEma} rsiV={wRsi} macdV={wMacd} sigV={wSig} />
+
+        <p style={{ fontSize: 11, color: C.textFaint, lineHeight: 1.55, marginTop: 4 }}>
+          App chỉ cần <b style={{ color: C.textDim }}>1 trong 3</b> chỉ báo (EMA20 / RSI14 / MACD) đồng thuận trên <b style={{ color: C.textDim }}>cả 2 khung</b> (Daily
+          &amp; Weekly) là đủ để xác nhận "cùng chiều". Trên chart Daily: đường vàng = EMA20, đường xám chấm chấm = đáy/đỉnh sóng đẩy (0%/100%), đường màu{" "}
+          {cp.side === "long" ? "xanh" : "đỏ"} liền nét = các mức TP80 tương ứng thẻ "+1/+2/+3 ngày" trên card.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 const thStyle = { padding: "6px 4px", textAlign: "right", borderBottom: `1px solid ${C.borderSoft}`, color: C.textFaint, fontWeight: 500, fontSize: 10, textTransform: "uppercase" };
 const tdStyle = { padding: "6px 4px", textAlign: "right", borderBottom: `1px solid ${C.borderSoft}` };
 const tdStyleLeft = { ...tdStyle, textAlign: "left", color: C.textDim };
@@ -457,16 +663,16 @@ function analyzeSymbol(D, W) {
   const cp = getCurrentPullback(D, dInd.up, dInd.down, wUpM, wDownM, lowIdx, highIdx);
   if (!cp) return { cp: null, bt: null, valid: false };
   const bt = runBacktest(D, dInd.up, dInd.down, wUpM, wDownM, lowIdx, highIdx, cp.side);
-  // Kiểm tra target NGÀY MAI (1 ngày kể từ HÔM NAY, tức vị trí streak trong
-  // mảng 0-based) đã bị giá vượt qua chưa — dùng đúng vị trí hiện tại (streak)
-  // thay vì cố định "ngày 2" như trước, vì streak giờ có thể là bất kỳ số nào.
+  // Kiểm tra target NGÀY MAI (vị trí streak trong mảng 0-based) đã bị giá
+  // CHẠM TỚI chưa — dùng extSoFar (mức cao/thấp nhất giá ĐÃ TỪNG chạm kể từ
+  // đỉnh/đáy), KHÔNG dùng giá đóng cửa cuối cùng. Nếu chỉ so giá đóng cửa,
+  // trường hợp giá đã bật lên chạm target rồi lùi lại nhẹ sẽ bị tính nhầm là
+  // "chưa đạt" và tiếp tục hiện — đúng bug đã gặp.
   const nextIdx = cp.streak; // todayIdx (streak-1) + 1
   const nextRatio = nextIdx < NMAX ? bt.target80ByDay[nextIdx] : null;
   let valid = true;
   if (nextRatio !== null) {
-    const nextPrice = ratioToPrice(nextRatio, cp);
-    const alreadyPassed = cp.side === "long" ? nextPrice <= cp.lastClose : nextPrice >= cp.lastClose;
-    valid = !alreadyPassed;
+    valid = cp.extSoFar < nextRatio;
   }
   return { cp, bt, valid };
 }
@@ -490,6 +696,8 @@ export default function SongDayScreener() {
   const [tab, setTab] = useState("Tất cả");
   const [openSym, setOpenSym] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [rawData, setRawData] = useState(null); // giữ nguyên raw.D/raw.W để mở modal chart chi tiết
+  const [detailItem, setDetailItem] = useState(null); // item (sym+cp+bt) đang xem chart chi tiết (null = đóng)
 
   useEffect(() => {
     let cancelled = false;
@@ -531,6 +739,7 @@ export default function SongDayScreener() {
           setClosedItems(closed);
           setTotalScanned(symbols.length);
           setGeneratedAt(raw.generatedAt);
+          setRawData(raw);
           setStatus("ready");
         }
       } catch (e) {
@@ -671,7 +880,7 @@ export default function SongDayScreener() {
                 {c} ({g.active.length}{g.closed.length > 0 ? ` +${g.closed.length} đã đóng` : ""})
               </div>
               {g.active.map((item) => (
-                <PairCard key={item.sym} item={item} open={openSym === item.sym} onToggle={() => setOpenSym(openSym === item.sym ? null : item.sym)} />
+                <PairCard key={item.sym} item={item} open={openSym === item.sym} onToggle={() => setOpenSym(openSym === item.sym ? null : item.sym)} onInfo={setDetailItem} />
               ))}
               {g.closed.map((w) => (
                 <ClosedCard key={w.sym} w={w} />
@@ -682,15 +891,17 @@ export default function SongDayScreener() {
 
         {status === "ready" && (
           <div style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
-            Phương pháp: xu hướng D/W xác nhận khi <b>≥1 trong 3</b> chỉ báo đồng thuận (Close so EMA20, RSI14 &gt;/&lt; 50, MACD(12,26,9) cắt Signal) — không cần
-            cả 3 cùng lúc; "hồi" = số ngày kể từ ĐỈNH/ĐÁY pivot 3-nến gần nhất (không phải đếm nến ngược màu liên tiếp, tối đa 15 ngày mới còn tính là hồi ngắn hạn);
-            biên độ sóng đẩy đo từ swing-pivot 3-nến gần nhất tới đỉnh/đáy trước khi hồi. Target 80% = percentile 20 của phân phối mở rộng lũy kế trong lịch sử
-            của chính từng cặp, theo từng mức hồi đã chạm. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.
+            Phương pháp: Daily &amp; Weekly cùng chiều khi <b>≥1 trong 3</b> chỉ báo (EMA20/RSI14/MACD) đồng thuận trên mỗi khung — không cần cả 3 cùng lúc,
+            áp dụng như nhau cho cả Daily và Weekly. "Hồi" = số ngày kể từ ĐỈNH/ĐÁY pivot 3-nến gần nhất, <b>chỉ chấp nhận 1-2 ngày</b> — từ 3 ngày trở đi loại
+            bỏ hoàn toàn do nguy cơ đảo chiều. Biên độ sóng đẩy đo từ swing-pivot liền trước tới đỉnh/đáy đó. Target 80% = percentile 20 của phân phối mở rộng
+            lũy kế trong lịch sử của chính từng cặp. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.
           </div>
         )}
       </div>
 
       <style>{`@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`}</style>
+
+      {detailItem && <DetailChartModal item={detailItem} rawData={rawData} onClose={() => setDetailItem(null)} />}
     </div>
   );
 }
