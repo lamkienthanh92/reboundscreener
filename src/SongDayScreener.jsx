@@ -147,9 +147,12 @@ function matchesSide(D, i, side) {
   return side === "long" ? D[i].c > D[i].o : D[i].c < D[i].o;
 }
 
-function pullbackStateAt(D, idx, side) {
+function pullbackStateAt(D, idx, side, diagOut) {
   // Hôm nay + hôm qua đều cùng chiều -> đang trong sóng đẩy, chưa hồi.
-  if (matchesSide(D, idx, side) && idx > 0 && matchesSide(D, idx - 1, side)) return null;
+  if (matchesSide(D, idx, side) && idx > 0 && matchesSide(D, idx - 1, side)) {
+    if (diagOut) diagOut.reason = "pushing";
+    return null;
+  }
 
   // Quét ngược tìm ngày cuối cùng của chuỗi sóng đẩy gần nhất (2 nến liên tiếp cùng chiều).
   let j = idx;
@@ -157,10 +160,20 @@ function pullbackStateAt(D, idx, side) {
     if (matchesSide(D, j, side) && matchesSide(D, j - 1, side)) break;
     j--;
   }
-  if (j < 1) return null;
+  if (j < 1) {
+    if (diagOut) diagOut.reason = "no_impulse";
+    return null;
+  }
   const impulseEndIdx = j;
   const streak = idx - impulseEndIdx;
-  if (streak < 1 || streak > MAX_STREAK) return null;
+  if (streak < 1) {
+    if (diagOut) diagOut.reason = "no_impulse";
+    return null;
+  }
+  if (streak > MAX_STREAK) {
+    if (diagOut) { diagOut.reason = "streak_too_long"; diagOut.streak = streak; }
+    return null;
+  }
 
   // Mở rộng lùi để lấy trọn chuỗi (tìm điểm bắt đầu chuỗi).
   let impulseStartIdx = impulseEndIdx;
@@ -185,7 +198,10 @@ function pullbackStateAt(D, idx, side) {
   const peakVal = Math.max(impulseHigh, D[firstReversalIdx].h);
 
   const impulse = peakVal - base;
-  if (impulse <= 0) return null;
+  if (impulse <= 0) {
+    if (diagOut) diagOut.reason = "bad_impulse";
+    return null;
+  }
 
   let curMin = Infinity, curMax = -Infinity;
   for (let i = firstReversalIdx; i <= idx; i++) { curMin = Math.min(curMin, D[i].l); curMax = Math.max(curMax, D[i].h); }
@@ -198,14 +214,15 @@ function pullbackStateAt(D, idx, side) {
   return { side, streak, retr, extSoFar, impulse, base, peakVal, peakIdx: impulseEndIdx };
 }
 
-function getCurrentPullback(D, dUp, dDown, wUpM, wDownM) {
+function getCurrentPullback(D, dUp, dDown, wUpM, wDownM, diagOut) {
   const last = D.length - 1;
   // Daily chỉ cần ≥1/3 chỉ báo (EMA20/RSI14 vs MA10/Heikin Ashi) cùng chiều Weekly là đủ.
   let side = null;
   if (dUp[last] && wUpM[last]) side = "long";
   else if (dDown[last] && wDownM[last]) side = "short";
-  if (!side) return null;
-  const st = pullbackStateAt(D, last, side);
+  if (!side) { if (diagOut) diagOut.reason = "no_trend"; return null; }
+  if (diagOut) diagOut.side = side;
+  const st = pullbackStateAt(D, last, side, diagOut);
   if (!st) return null;
   return { ...st, entryDate: D[st.peakIdx + 1].d, lastDate: D[last].d, lastClose: D[last].c };
 }
@@ -673,8 +690,9 @@ function analyzeSymbol(D, W) {
   const dInd = buildIndicators(D);
   const wInd = buildIndicators(W);
   const { outUp: wUpM, outDown: wDownM } = mapWeeklyToDaily(D, W, wInd.up, wInd.down);
-  const cp = getCurrentPullback(D, dInd.up, dInd.down, wUpM, wDownM);
-  if (!cp) return { cp: null, bt: null, valid: false };
+  const diag = { reason: null, side: null };
+  const cp = getCurrentPullback(D, dInd.up, dInd.down, wUpM, wDownM, diag);
+  if (!cp) return { cp: null, bt: null, valid: false, diag };
   const bt = runBacktest(D, dInd.up, dInd.down, wUpM, wDownM, cp.side);
   // Kiểm tra target NGÀY MAI (vị trí streak trong mảng 0-based) đã bị giá VƯỢT
   // QUA chưa — so với giá ĐÓNG CỬA hiện tại (lastClose).
@@ -696,13 +714,27 @@ function analyzeSymbol(D, W) {
     const alreadyPassed = cp.side === "long" ? nextPrice <= cp.lastClose : nextPrice >= cp.lastClose;
     valid = !alreadyPassed;
   }
-  return { cp, bt, valid };
+  if (!valid) diag.reason = "target_passed";
+  else diag.reason = "active";
+  return { cp, bt, valid, diag };
 }
 
 const REASON_LABEL = {
   flipped: { text: "Đảo chiều hoàn toàn (Long ↔ Short) — nên chốt ngay", color: "short", icon: "⛔" },
   ended: { text: "Hồi đã kết thúc / D+W không còn thẳng hàng", color: "amber", icon: "⚠" },
   tp_reached: { text: "Giá đã vượt TP80 (2 ngày) — có thể đã đạt mục tiêu", color: "long", icon: "✓" },
+};
+
+// Nhãn minh bạch trạng thái CỦA TỪNG CẶP, kể cả khi không có tín hiệu — để
+// biết chính xác đang vướng ở bước nào, thay vì chỉ thấy danh sách trống.
+const DIAG_LABEL = {
+  no_trend: "Daily & Weekly chưa cùng chiều",
+  pushing: "Đang đẩy sóng (2 nến gần nhất cùng chiều) — chưa hồi",
+  no_impulse: "Chưa tìm thấy chuỗi sóng đẩy hợp lệ trong dữ liệu",
+  streak_too_long: "Hồi quá dài (vượt quá 3 ngày)",
+  bad_impulse: "Biên độ sóng đẩy không hợp lệ",
+  target_passed: "Đã đạt/vượt target ngày kế tiếp",
+  active: "Đang hồi hợp lệ",
 };
 
 // ============================================================================
@@ -713,6 +745,8 @@ export default function SongDayScreener() {
   const [errMsg, setErrMsg] = useState("");
   const [items, setItems] = useState([]); // tín hiệu đang active hôm nay
   const [closedItems, setClosedItems] = useState([]); // từng active hôm qua, hôm nay không còn -> hiển thị mờ
+  const [diagnostics, setDiagnostics] = useState([]); // trạng thái từng cặp (kể cả không tín hiệu) — minh bạch, chống nghi ngờ "lỗi ẩn"
+  const [showDiag, setShowDiag] = useState(false);
   const [generatedAt, setGeneratedAt] = useState(null);
   const [totalScanned, setTotalScanned] = useState(0);
   const [tab, setTab] = useState("Tất cả");
@@ -733,12 +767,14 @@ export default function SongDayScreener() {
         const symbols = Object.keys(raw.D).filter((s) => !EXCLUDED_SYMBOLS.includes(s));
         const out = [];
         const closed = [];
+        const diagList = []; // trạng thái TỪNG cặp, kể cả không có tín hiệu — để minh bạch, không còn "hộp đen"
         for (const sym of symbols) {
           const D = raw.D[sym], W = raw.W[sym];
           if (!D || !W || D.length < 121 || W.length < 60) continue;
 
           const today = analyzeSymbol(D, W);
           if (today.cp && today.valid) out.push({ sym, cp: today.cp, bt: today.bt });
+          diagList.push({ sym, side: today.diag.side, reason: today.diag.reason, streak: today.diag.streak ?? today.cp?.streak });
 
           // "Hôm qua" = chạy lại ĐÚNG thuật toán trên dữ liệu cắt bớt 1 nến
           // cuối — không cần lưu trữ gì, tự tính lại được ngay mỗi lần load.
@@ -759,6 +795,7 @@ export default function SongDayScreener() {
         if (!cancelled) {
           setItems(out);
           setClosedItems(closed);
+          setDiagnostics(diagList);
           setTotalScanned(symbols.length);
           setGeneratedAt(raw.generatedAt);
           setRawData(raw);
@@ -911,12 +948,52 @@ export default function SongDayScreener() {
           );
         })}
 
+        {status === "ready" && diagnostics.length > 0 && (
+          <div style={{ marginTop: 20 }}>
+            <button
+              onClick={() => setShowDiag((v) => !v)}
+              style={{
+                width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                background: C.panel, border: `1px solid ${C.borderSoft}`, borderRadius: 12, padding: "10px 14px",
+                color: C.textDim, fontSize: 12, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer",
+              }}
+            >
+              <span>Xem trạng thái tất cả {diagnostics.length} cặp (kể cả 0 tín hiệu — minh bạch từng bước lọc)</span>
+              <span>{showDiag ? "▲" : "▾"}</span>
+            </button>
+            {showDiag && (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, marginTop: 8 }}>
+                <thead>
+                  <tr>
+                    <th style={thStyle}>Cặp</th>
+                    <th style={thStyle}>Chiều</th>
+                    <th style={thStyle}>Streak</th>
+                    <th style={{ ...thStyle, textAlign: "left" }}>Trạng thái</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {diagnostics.map((d) => (
+                    <tr key={d.sym} style={{ background: d.reason === "active" ? C.longSoft : "transparent" }}>
+                      <td style={tdStyleLeft}>{d.sym}</td>
+                      <td style={{ ...tdStyle, color: d.side === "long" ? C.long : d.side === "short" ? C.short : C.textFaint }}>{d.side ? d.side.toUpperCase() : "—"}</td>
+                      <td style={tdStyle}>{d.streak ?? "—"}</td>
+                      <td style={{ padding: "6px 4px", textAlign: "left", borderBottom: `1px solid ${C.borderSoft}`, color: d.reason === "active" ? C.long : C.textFaint }}>
+                        {DIAG_LABEL[d.reason] || d.reason}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
         {status === "ready" && (
-          <div style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
+          <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
             Phương pháp: Daily &amp; Weekly cùng chiều khi <b>≥1 trong 3</b> chỉ báo (Close so EMA20, RSI14 so MA10 của chính nó, màu nến Heikin Ashi) đồng thuận trên mỗi khung — không cần cả 3 cùng lúc,
             áp dụng như nhau cho cả Daily và Weekly. "Sóng đẩy" = chuỗi ≥2 nến liên tiếp cùng chiều Weekly; "Hồi" bắt đầu từ nến ngược chiều đầu tiên sau chuỗi đó,
-            <b>chỉ chấp nhận 1-3 ngày</b> — từ 4 ngày trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều. Target 80% = percentile 20 của phân phối mở rộng
-            lũy kế trong lịch sử của chính từng cặp. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.
+            <b>chỉ chấp nhận 1-3 ngày</b> — từ 4 ngày trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều. Target 80% = percentile 20 của giá <b>đúng ngày đó</b>
+            (không cộng dồn/running-max) trong lịch sử của chính từng cặp. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.
           </div>
         )}
       </div>
