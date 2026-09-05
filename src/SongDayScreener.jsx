@@ -28,37 +28,7 @@ const NMAX = 20; // đủ dài để cover các đợt hồi kéo dài nhiều n
 // ============================================================================
 // INDICATORS
 // ============================================================================
-function ema(vals, period) {
-  const k = 2 / (period + 1);
-  const out = new Array(vals.length).fill(null);
-  let prev = vals[0];
-  out[0] = prev;
-  for (let i = 1; i < vals.length; i++) {
-    prev = vals[i] * k + prev * (1 - k);
-    out[i] = prev;
-  }
-  return out;
-}
-function rsi(vals, period = 14) {
-  const n = vals.length;
-  const out = new Array(n).fill(null);
-  let avgGain = 0, avgLoss = 0;
-  for (let i = 1; i < n; i++) {
-    const diff = vals[i] - vals[i - 1];
-    const gain = Math.max(diff, 0), loss = Math.max(-diff, 0);
-    if (i <= period) {
-      avgGain += gain / period; avgLoss += loss / period;
-      if (i === period) { const rs = avgGain / avgLoss; out[i] = 100 - 100 / (1 + rs); }
-    } else {
-      avgGain = (avgGain * (period - 1) + gain) / period;
-      avgLoss = (avgLoss * (period - 1) + loss) / period;
-      const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
-      out[i] = 100 - 100 / (1 + rs);
-    }
-  }
-  return out;
-}
-// SMA thuần (dùng để làm đường tín hiệu MA10 cho RSI) — bỏ qua các phần tử null.
+// SMA thuần — bỏ qua các phần tử null.
 function sma(vals, period) {
   const out = new Array(vals.length).fill(null);
   for (let i = 0; i < vals.length; i++) {
@@ -68,57 +38,34 @@ function sma(vals, period) {
   }
   return out;
 }
-// Heikin Ashi — nến trung bình làm mượt, đổi màu sớm/ổn định hơn nhiều so với
-// chờ MACD cắt Signal. haClose>haOpen = nến xanh (tăng), ngược lại = đỏ (giảm).
-function heikinAshi(bars) {
+// Williams %R(21): (HighestHigh(21) - Close) / (HighestHigh(21) - LowestLow(21)) * -100
+// Giá trị từ -100 (đáy) đến 0 (đỉnh). So với MA13 của chính nó để xác định xu hướng.
+function williamsR(bars, period = 21) {
   const n = bars.length;
-  const haOpen = new Array(n), haClose = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    haClose[i] = (b.o + b.h + b.l + b.c) / 4;
-    haOpen[i] = i === 0 ? (b.o + b.c) / 2 : (haOpen[i - 1] + haClose[i - 1]) / 2;
+  const out = new Array(n).fill(null);
+  for (let i = period - 1; i < n; i++) {
+    let hh = -Infinity, ll = Infinity;
+    for (let j = i - period + 1; j <= i; j++) { hh = Math.max(hh, bars[j].h); ll = Math.min(ll, bars[j].l); }
+    const range = hh - ll;
+    out[i] = range === 0 ? 0 : ((hh - bars[i].c) / range) * -100;
   }
-  return { haOpen, haClose };
+  return out;
 }
+// Chỉ báo DUY NHẤT xác định xu hướng: Williams %R(21) so với MA13 của chính
+// nó — WR > MA13(WR) = tăng, WR < MA13(WR) = giảm. Dùng CHUNG cho cả Daily và
+// Weekly, tính độc lập trên từng khung (không còn cần OR nhiều chỉ báo nữa).
 function buildIndicators(bars) {
-  const closes = bars.map((b) => b.c);
-  const ema20 = ema(closes, 20);
-  const rsi14 = rsi(closes, 14);
-  const rsiMa10 = sma(rsi14, 10);
-  const { haOpen, haClose } = heikinAshi(bars);
-  // Chỉ cần 1 trong 3 chỉ báo xác nhận là đủ (OR), không cần cả 3 đồng thuận (AND):
-  // (1) Close vs EMA20, (2) RSI14 vs MA10 của chính nó (không phải mốc 50 cố định),
-  // (3) màu nến Heikin Ashi (phản ứng nhanh hơn nhiều so với chờ MACD cắt Signal).
-  const up = closes.map((c, i) =>
-    c > ema20[i] || (rsi14[i] !== null && rsiMa10[i] !== null && rsi14[i] > rsiMa10[i]) || haClose[i] > haOpen[i]
-  );
-  const down = closes.map((c, i) =>
-    c < ema20[i] || (rsi14[i] !== null && rsiMa10[i] !== null && rsi14[i] < rsiMa10[i]) || haClose[i] < haOpen[i]
-  );
-  return { up, down };
+  const wr = williamsR(bars, 21);
+  const wrMa = sma(wr, 13);
+  const up = wr.map((v, i) => v !== null && wrMa[i] !== null && v > wrMa[i]);
+  const down = wr.map((v, i) => v !== null && wrMa[i] !== null && v < wrMa[i]);
+  return { up, down, wr, wrMa };
 }
-// Bản đầy đủ (trả nguyên chuỗi số, không rút gọn thành up/down) — dùng cho
-// modal xem chart chi tiết, để hiển thị đúng giá trị EMA20/RSI14/MA10/HA thật.
+// Bản đầy đủ (giữ tên để tương thích modal chart) — trả nguyên chuỗi WR/MA13.
 function computeFullIndicators(bars) {
-  const closes = bars.map((b) => b.c);
-  const ema20 = ema(closes, 20);
-  const rsi14 = rsi(closes, 14);
-  const rsiMa10 = sma(rsi14, 10);
-  const { haOpen, haClose } = heikinAshi(bars);
-  return { closes, ema20, rsi14, rsiMa10, haOpen, haClose };
-}
-function mapWeeklyToDaily(dBars, wBars, wUp, wDown) {
-  const outUp = new Array(dBars.length).fill(false);
-  const outDown = new Array(dBars.length).fill(false);
-  const shift = 3 * 24 * 3600 * 1000;
-  const wShifted = wBars.map((b) => b.t + shift);
-  let wi = -1;
-  for (let i = 0; i < dBars.length; i++) {
-    const dt = dBars[i].t;
-    while (wi + 1 < wBars.length && wShifted[wi + 1] <= dt) wi++;
-    if (wi >= 0) { outUp[i] = wUp[wi]; outDown[i] = wDown[wi]; }
-  }
-  return { outUp, outDown };
+  const wr = williamsR(bars, 21);
+  const wrMa = sma(wr, 13);
+  return { wr, wrMa };
 }
 function percentile(arr, p) {
   if (!arr.length) return null;
@@ -214,41 +161,42 @@ function pullbackStateAt(D, idx, side, diagOut) {
   return { side, streak, retr, extSoFar, impulse, base, peakVal, peakIdx: impulseEndIdx };
 }
 
-function getCurrentPullback(D, dUp, dDown, wUpM, wDownM, diagOut) {
-  const last = D.length - 1;
-  // Daily chỉ cần ≥1/3 chỉ báo (EMA20/RSI14 vs MA10/Heikin Ashi) cùng chiều Weekly là đủ.
+function getCurrentPullback(bars, up, down, diagOut) {
+  const last = bars.length - 1;
+  // 1 chỉ báo duy nhất (Williams %R21 vs MA13 của chính nó), tính độc lập
+  // trên khung đang xét — không còn cần khung kia xác nhận.
   let side = null;
-  if (dUp[last] && wUpM[last]) side = "long";
-  else if (dDown[last] && wDownM[last]) side = "short";
+  if (up[last]) side = "long";
+  else if (down[last]) side = "short";
   if (!side) { if (diagOut) diagOut.reason = "no_trend"; return null; }
   if (diagOut) diagOut.side = side;
-  const st = pullbackStateAt(D, last, side, diagOut);
+  const st = pullbackStateAt(bars, last, side, diagOut);
   if (!st) return null;
-  return { ...st, entryDate: D[st.peakIdx + 1].d, lastDate: D[last].d, lastClose: D[last].c };
+  return { ...st, entryDate: bars[st.peakIdx + 1].d, lastDate: bars[last].d, lastClose: bars[last].c };
 }
 
 // ============================================================================
-// BACKTEST: mẫu = NGÀY ĐẦU TIÊN rời sóng đẩy (streak===1 tại ngày đó, tức hôm
-// trước chính là ngày cuối chuỗi). extByDay[m] = mức giá CỦA RIÊNG ngày (m+1)
-// kể từ đó (KHÔNG cộng dồn/running-max) — tra thẳng bằng "streak-1" ra đúng
-// vị trí hôm nay.
+// BACKTEST: mẫu = NGÀY/TUẦN ĐẦU TIÊN rời sóng đẩy (streak===1 tại đó, tức kỳ
+// trước chính là kỳ cuối chuỗi). extByDay[m] = mức giá CỦA RIÊNG kỳ (m+1) kể
+// từ đó (KHÔNG cộng dồn/running-max) — tra thẳng bằng "streak-1" ra đúng vị
+// trí hiện tại. Dùng chung cho cả Daily và Weekly (chỉ khác mảng bars truyền vào).
 // ============================================================================
-function runBacktest(D, dUp, dDown, wUpM, wDownM, side) {
+function runBacktest(bars, up, down, side) {
   const extByDayRows = [];
-  for (let i = 60; i < D.length; i++) {
-    // Candidate: Daily (≥1/3 chỉ báo) VÀ Weekly (≥1/3 chỉ báo) cùng chiều —
-    // khớp đúng điều kiện live ở trên.
-    if (side === "long") { if (!(dUp[i] && wUpM[i])) continue; }
-    else { if (!(dDown[i] && wDownM[i])) continue; }
-    const st = pullbackStateAt(D, i, side);
-    if (!st || st.streak !== 1) continue; // chỉ lấy ngày đầu tiên rời sóng đẩy
-    if (i + NMAX - 1 >= D.length) continue;
+  for (let i = 60; i < bars.length; i++) {
+    // Candidate: chỉ báo (WR21 vs MA13) xác nhận đúng chiều tại kỳ i — độc lập
+    // trên khung đang xét, không cần khung kia xác nhận.
+    if (side === "long") { if (!up[i]) continue; }
+    else { if (!down[i]) continue; }
+    const st = pullbackStateAt(bars, i, side);
+    if (!st || st.streak !== 1) continue; // chỉ lấy kỳ đầu tiên rời sóng đẩy
+    if (i + NMAX - 1 >= bars.length) continue;
 
     const extByDay = [];
     for (let k = 0; k < NMAX; k++) {
       const idx = i + k;
-      // Giá trị CỦA RIÊNG ngày idx (Long: High, Short: Low) — không cộng dồn.
-      extByDay.push(side === "long" ? (D[idx].h - st.base) / st.impulse : (st.base - D[idx].l) / st.impulse);
+      // Giá trị CỦA RIÊNG kỳ idx (Long: High, Short: Low) — không cộng dồn.
+      extByDay.push(side === "long" ? (bars[idx].h - st.base) / st.impulse : (st.base - bars[idx].l) / st.impulse);
     }
     extByDayRows.push(extByDay);
   }
@@ -335,14 +283,14 @@ function ImpulseScale({ retr, side }) {
 // ============================================================================
 // COMPONENT: one pair card
 // ============================================================================
-function PairCard({ item, open, onToggle, onInfo }) {
+function PairCard({ item, unit, open, onToggle, onInfo }) {
   const { sym, cp, bt } = item;
   const sideColor = cp.side === "long" ? C.long : C.short;
   const sideSoft = cp.side === "long" ? C.longSoft : C.shortSoft;
-  const crossTxt = bt.crossDay ? `${bt.crossDay} ngày` : `chưa đạt trong ${NMAX} ngày`;
+  const crossTxt = bt.crossDay ? `${bt.crossDay} ${unit}` : `chưa đạt trong ${NMAX} ${unit}`;
 
-  // Hôm nay ứng với vị trí (streak-1) trong mảng target80ByDay (index 0 = ngày
-  // 1 kể từ đỉnh/đáy). +1/+2/+3 ngày NỮA kể từ hôm nay = todayIdx+1, +2, +3.
+  // Hiện tại ứng với vị trí (streak-1) trong mảng target80ByDay (index 0 = kỳ
+  // 1 kể từ đỉnh/đáy). +1/+2/+3 kỳ NỮA kể từ hiện tại = todayIdx+1, +2, +3.
   const todayIdx = cp.streak - 1;
   const offsets = [1, 2, 3];
 
@@ -372,14 +320,14 @@ function PairCard({ item, open, onToggle, onInfo }) {
               background: "transparent", color: C.textFaint, fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
               display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, flexShrink: 0,
             }}
-            title="Xem chart Weekly + Daily"
+            title="Xem chart chi tiết"
           >
             !
           </button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: C.textFaint, whiteSpace: "nowrap" }}>
-            hồi <b style={{ color: C.textDim }}>{cp.streak}</b> ngày (từ đỉnh/đáy)
+            hồi <b style={{ color: C.textDim }}>{cp.streak}</b> {unit} (từ đỉnh/đáy)
           </span>
           <ChevronDown size={14} color={C.textFaint} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .15s ease" }} />
         </div>
@@ -392,9 +340,8 @@ function PairCard({ item, open, onToggle, onInfo }) {
         <b style={{ color: C.textDim }}>{bt.n}</b> lần mẫu hình này từng xảy ra trong lịch sử {sym}
       </div>
 
-      {/* TP 80% cho 1 / 2 / 3 ngày NỮA kể từ HÔM NAY (không phải từ lúc bắt đầu
-          hồi) — vì đã đang hồi được {cp.streak} ngày rồi, mốc "2/3/4 ngày" cố
-          định không còn đúng nghĩa. */}
+      {/* TP 80% cho 1 / 2 / 3 kỳ NỮA kể từ HIỆN TẠI (không phải từ lúc bắt đầu
+          hồi) — vì đã đang hồi được {cp.streak} {unit} rồi. */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginTop: 10 }}>
         {offsets.map((off) => {
           const idx = todayIdx + off;
@@ -402,7 +349,7 @@ function PairCard({ item, open, onToggle, onInfo }) {
           const price = ratioToPrice(ratio, cp);
           return (
             <div key={off} style={{ background: sideSoft, border: `1px solid ${sideColor}55`, borderRadius: 10, padding: "8px 9px", textAlign: "center" }}>
-              <div style={{ fontSize: 9.5, color: C.textDim, letterSpacing: "0.02em" }}>TP 80% · +{off} ngày</div>
+              <div style={{ fontSize: 9.5, color: C.textDim, letterSpacing: "0.02em" }}>TP 80% · +{off} {unit}</div>
               <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: sideColor, marginTop: 3 }}>
                 {ratio !== null ? fmtPrice(price, sym) : "—"}
               </div>
@@ -422,12 +369,12 @@ function PairCard({ item, open, onToggle, onInfo }) {
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.borderSoft}` }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 14 }}>
             <StatBox k="Mẫu lịch sử (n)" v={bt.n} />
-            <StatBox k="Ngày đạt lại 100%" v={crossTxt} />
+            <StatBox k={`${unit === "ngày" ? "Ngày" : "Tuần"} đạt lại 100%`} v={crossTxt} />
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5 }}>
             <thead>
               <tr>
-                <th style={thStyle}>Ngày (từ đỉnh/đáy)</th>
+                <th style={thStyle}>{unit === "ngày" ? "Ngày" : "Tuần"} (từ đỉnh/đáy)</th>
                 <th style={thStyle}>Target 80%</th>
                 <th style={thStyle}>Giá TP (80%)</th>
               </tr>
@@ -439,7 +386,7 @@ function PairCard({ item, open, onToggle, onInfo }) {
                 const isCur = k === todayIdx;
                 return (
                   <tr key={k} style={{ background: isCur ? C.amberSoft : "transparent" }}>
-                    <td style={tdStyleLeft}>N{k + 1}{isCur ? " (hôm nay)" : ""}</td>
+                    <td style={tdStyleLeft}>N{k + 1}{isCur ? " (hiện tại)" : ""}</td>
                     <td style={{ ...tdStyle, color: isCur ? C.amber : C.text, fontWeight: isCur ? 700 : 400 }}>{fmtPct(ratio)}</td>
                     <td style={{ ...tdStyle, color: isCur ? C.amber : C.text, fontWeight: isCur ? 700 : 400 }}>{ratio !== null ? fmtPrice(priceV, sym) : "—"}</td>
                   </tr>
@@ -448,10 +395,10 @@ function PairCard({ item, open, onToggle, onInfo }) {
             </tbody>
           </table>
           <p style={{ fontSize: 11.5, color: C.textFaint, lineHeight: 1.55, marginTop: 10 }}>
-            <b style={{ color: C.textDim }}>Đọc bảng:</b> mỗi dòng Nk là "qua k ngày kể từ ĐỈNH/ĐÁY gần nhất (không phải từ lúc màu nến đổi), 80% trường hợp
-            trong lịch sử giá đã đạt tới mức này" — tính trên toàn bộ <b style={{ color: C.textDim }}>{bt.n}</b> lần cặp {sym} từng có D+W cùng chiều rồi rời
-            đỉnh/đáy. Cột % theo thang 0–100%+ (100% = đỉnh/đáy cũ trước khi hồi); cột giá quy đổi sang giá thực dựa trên biên độ sóng đẩy hiện tại. Dòng nền
-            vàng ("hôm nay") là vị trí hiện tại, ứng với đã hồi {cp.streak} ngày kể từ đỉnh/đáy.
+            <b style={{ color: C.textDim }}>Đọc bảng:</b> mỗi dòng Nk là "qua k {unit} kể từ ĐỈNH/ĐÁY gần nhất (không phải từ lúc màu nến đổi), 80% trường hợp
+            trong lịch sử giá đã đạt tới mức này" — tính trên toàn bộ <b style={{ color: C.textDim }}>{bt.n}</b> lần cặp {sym} rời đỉnh/đáy trong xu hướng
+            (Williams %R21 vs MA13). Cột % theo thang 0–100%+ (100% = đỉnh/đáy cũ trước khi hồi); cột giá quy đổi sang giá thực dựa trên biên độ sóng đẩy hiện
+            tại. Dòng nền vàng ("hiện tại") là vị trí hiện tại, ứng với đã hồi {cp.streak} {unit} kể từ đỉnh/đáy.
           </p>
         </div>
       )}
@@ -534,33 +481,27 @@ function IndicatorBadge({ label, valueText, matches }) {
 }
 
 // ============================================================================
-// COMPONENT: modal xem chi tiết Weekly + Daily kèm 3 chỉ báo + đường tham
-// chiếu sóng đẩy (đáy/đỉnh, mức TP) — để kiểm chứng trực quan D+W có thật sự
-// cùng chiều không, hồi đã tới đâu, và TP nên đặt ở đâu.
+// COMPONENT: modal xem chi tiết chart của ĐÚNG khung đang xét (Daily hoặc
+// Weekly — 2 hệ thống độc lập nên chỉ hiện 1 chart tương ứng) kèm chỉ báo
+// Williams %R21 vs MA13 + đường tham chiếu sóng đẩy (đáy/đỉnh, mức TP).
 // ============================================================================
-function DetailChartModal({ item, rawData, onClose }) {
+function DetailChartModal({ item, rawData, unit, onClose }) {
   if (!item || !rawData) return null;
   const { sym, cp, bt } = item;
-  const D = rawData.D[sym], W = rawData.W[sym];
+  const bars = unit === "ngày" ? rawData.D[sym] : getCompletedWeeklyBars(rawData.D[sym], rawData.W[sym]);
 
-  const dFull = computeFullIndicators(D);
-  const wFull = computeFullIndicators(W);
+  const full = computeFullIndicators(bars);
+  const NBARS = unit === "ngày" ? 45 : 30;
+  const slice = bars.slice(-NBARS);
 
-  const NBARS_D = 45, NBARS_W = 26;
-  const dSlice = D.slice(-NBARS_D);
-  const wSlice = W.slice(-NBARS_W);
-  const dEmaSlice = dFull.ema20.slice(-NBARS_D);
-  const wEmaSlice = wFull.ema20.slice(-NBARS_W);
-
-  const li = D.length - 1, wi = W.length - 1;
-  const dClose = D[li].c, dEma = dFull.ema20[li], dRsi = dFull.rsi14[li], dRsiMa = dFull.rsiMa10[li], dHaO = dFull.haOpen[li], dHaC = dFull.haClose[li];
-  const wClose = W[wi].c, wEma = wFull.ema20[wi], wRsi = wFull.rsi14[wi], wRsiMa = wFull.rsiMa10[wi], wHaO = wFull.haOpen[wi], wHaC = wFull.haClose[wi];
+  const li = bars.length - 1;
+  const close = bars[li].c, wrV = full.wr[li], wrMaV = full.wrMa[li];
 
   const sideColor = cp.side === "long" ? C.long : C.short;
   const todayIdx = cp.streak - 1;
 
-  // Đường tham chiếu vẽ đè lên chart DAILY: đáy/đỉnh sóng đẩy (gốc so sánh) +
-  // 3 mức TP80 (+1/+2/+3 ngày kể từ hôm nay) — đúng những gì card đang hiển thị.
+  // Đường tham chiếu vẽ đè lên chart: đáy/đỉnh sóng đẩy (gốc so sánh) + 3 mức
+  // TP80 (+1/+2/+3 kỳ kể từ hiện tại) — đúng những gì card đang hiển thị.
   const baseLabel = cp.side === "long" ? "đáy sóng đẩy" : "đỉnh sóng đẩy";
   const peakLabel = cp.side === "long" ? "đỉnh (đang hồi từ đây)" : "đáy (đang hồi từ đây)";
   const refLines = [
@@ -571,25 +512,7 @@ function DetailChartModal({ item, rawData, onClose }) {
     const idx = todayIdx + off;
     const ratio = idx < NMAX ? bt.target80ByDay[idx] : null;
     if (ratio === null) continue;
-    refLines.push({ value: ratioToPrice(ratio, cp), color: sideColor, label: `TP +${off}d`, dash: false });
-  }
-
-  function Section({ title, bars, emaSlice, close, emaV, rsiV, rsiMaV, haO, haC, refLines: rl, height }) {
-    return (
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>{title}</div>
-        <div style={{ background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 10, padding: "6px 4px 2px" }}>
-          <MiniCandleChart bars={bars} ema20={emaSlice} refLines={rl || []} height={height} />
-        </div>
-        <div style={{ marginTop: 8 }}>
-          <IndicatorBadge label={`Close (${close.toFixed(sym.includes("JPY") ? 3 : 5)}) vs EMA20 (${emaV.toFixed(sym.includes("JPY") ? 3 : 5)})`}
-            valueText={close > emaV ? "Close > EMA20 (tăng)" : "Close < EMA20 (giảm)"} matches={true} />
-          <IndicatorBadge label={`RSI14 (${rsiV.toFixed(1)}) vs MA10 (${rsiMaV !== null ? rsiMaV.toFixed(1) : "—"})`}
-            valueText={rsiMaV !== null ? (rsiV > rsiMaV ? "RSI > MA10 (tăng)" : "RSI < MA10 (giảm)") : "chưa đủ dữ liệu"} matches={true} />
-          <IndicatorBadge label="Heikin Ashi" valueText={haC > haO ? "Nến HA xanh (tăng)" : "Nến HA đỏ (giảm)"} matches={true} />
-        </div>
-      </div>
-    );
+    refLines.push({ value: ratioToPrice(ratio, cp), color: sideColor, label: `TP +${off}${unit === "ngày" ? "d" : "w"}`, dash: false });
   }
 
   return (
@@ -610,6 +533,9 @@ function DetailChartModal({ item, rawData, onClose }) {
             <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, fontWeight: 700, padding: "2.5px 7px", borderRadius: 5, background: cp.side === "long" ? C.longSoft : C.shortSoft, color: sideColor }}>
               {cp.side === "long" ? "LONG" : "SHORT"}
             </span>
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: C.textFaint, border: `1px solid ${C.borderSoft}`, borderRadius: 5, padding: "2px 6px" }}>
+              {unit === "ngày" ? "DAILY" : "WEEKLY"}
+            </span>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", color: C.textFaint, fontSize: 20, cursor: "pointer", lineHeight: 1 }}>×</button>
         </div>
@@ -618,18 +544,28 @@ function DetailChartModal({ item, rawData, onClose }) {
         <div style={{ background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
             Sóng đẩy: <b style={{ color: C.text }}>{fmtPrice(cp.base, sym)}</b> ({baseLabel}) → <b style={{ color: C.text }}>{fmtPrice(cp.peakVal, sym)}</b> ({peakLabel}),
-            đỉnh/đáy ngày <b style={{ color: C.text }}>{D[cp.peakIdx].d}</b>. Đang hồi <b style={{ color: C.amber }}>{cp.streak} ngày</b>, đã chạm{" "}
-            <b style={{ color: C.amber }}>{fmtPct(cp.retr)}</b> biên độ. Giá đóng cửa gần nhất <b style={{ color: C.text }}>{fmtPrice(dClose, sym)}</b>.
+            đỉnh/đáy {unit === "ngày" ? "ngày" : "tuần"} <b style={{ color: C.text }}>{bars[cp.peakIdx].d}</b>. Đang hồi <b style={{ color: C.amber }}>{cp.streak} {unit}</b>, đã chạm{" "}
+            <b style={{ color: C.amber }}>{fmtPct(cp.retr)}</b> biên độ. Giá đóng cửa gần nhất <b style={{ color: C.text }}>{fmtPrice(close, sym)}</b>.
           </div>
         </div>
 
-        <Section title={`Daily (${NBARS_D} phiên gần nhất) — có vẽ sóng đẩy + TP`} bars={dSlice} emaSlice={dEmaSlice} close={dClose} emaV={dEma} rsiV={dRsi} rsiMaV={dRsiMa} haO={dHaO} haC={dHaC} refLines={refLines} height={170} />
-        <Section title={`Weekly (${NBARS_W} tuần gần nhất)`} bars={wSlice} emaSlice={wEmaSlice} close={wClose} emaV={wEma} rsiV={wRsi} rsiMaV={wRsiMa} haO={wHaO} haC={wHaC} />
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+            {unit === "ngày" ? "Daily" : "Weekly"} ({NBARS} {unit} gần nhất) — có vẽ sóng đẩy + TP
+          </div>
+          <div style={{ background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 10, padding: "6px 4px 2px" }}>
+            <MiniCandleChart bars={slice} ema20={slice.map(() => null)} refLines={refLines} height={190} />
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <IndicatorBadge label={`Williams %R21 (${wrV !== null ? wrV.toFixed(1) : "—"}) vs MA13 (${wrMaV !== null ? wrMaV.toFixed(1) : "—"})`}
+              valueText={wrV !== null && wrMaV !== null ? (wrV > wrMaV ? "WR > MA13 (tăng)" : "WR < MA13 (giảm)") : "chưa đủ dữ liệu"} matches={true} />
+          </div>
+        </div>
 
         <p style={{ fontSize: 11, color: C.textFaint, lineHeight: 1.55, marginTop: 4 }}>
-          App chỉ cần <b style={{ color: C.textDim }}>1 trong 3</b> chỉ báo (EMA20 / RSI14 so MA10 của chính nó / màu nến Heikin Ashi) đồng thuận trên <b style={{ color: C.textDim }}>cả 2 khung</b> (Daily
-          &amp; Weekly) là đủ để xác nhận "cùng chiều". Trên chart Daily: đường vàng = EMA20, đường xám chấm chấm = đáy/đỉnh sóng đẩy (0%/100%), đường màu{" "}
-          {cp.side === "long" ? "xanh" : "đỏ"} liền nét = các mức TP80 tương ứng thẻ "+1/+2/+3 ngày" trên card.
+          App xác định xu hướng {unit === "ngày" ? "Daily" : "Weekly"} bằng <b style={{ color: C.textDim }}>1 chỉ báo duy nhất</b>: Williams %R(21) so với
+          MA13 của chính nó. Daily và Weekly là <b style={{ color: C.textDim }}>2 hệ thống độc lập</b>, không cần khung kia xác nhận. Đường xám chấm chấm =
+          đáy/đỉnh sóng đẩy (0%/100%), đường màu {cp.side === "long" ? "xanh" : "đỏ"} liền nét = các mức TP80 tương ứng thẻ "+1/+2/+3 {unit}" trên card.
         </p>
       </div>
     </div>
@@ -661,7 +597,7 @@ function ClosedCard({ w }) {
           fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, fontWeight: 700, padding: "1.5px 6px", borderRadius: 4,
           background: "transparent", border: `1px solid ${C.textFaint}`, color: C.textFaint,
         }}>
-          {w.side === "long" ? "LONG" : "SHORT"} hôm qua
+          {w.side === "long" ? "LONG" : "SHORT"} trước đó
         </span>
         <span style={{ marginLeft: "auto", fontSize: 14 }}>{r.icon}</span>
       </div>
@@ -680,33 +616,26 @@ function StatBox({ k, v }) {
 }
 
 // ============================================================================
-// SO SÁNH VỚI HÔM TRƯỚC — không lưu trữ gì cả. Vì đã có sẵn toàn bộ lịch sử
-// OHLC, chỉ cần chạy LẠI đúng thuật toán trên dữ liệu cắt bớt 1 nến cuối
-// (D.slice(0, -1)) để biết chính xác trạng thái "hôm qua" app từng hiển thị,
-// rồi so trực tiếp với "hôm nay" — không cần localStorage, hoạt động ngay cả
-// lần đầu mở trên thiết bị mới.
+// SO SÁNH VỚI KỲ TRƯỚC — không lưu trữ gì cả. Vì đã có sẵn toàn bộ lịch sử
+// OHLC, chỉ cần chạy LẠI đúng thuật toán trên dữ liệu cắt bớt 1 kỳ cuối
+// (bars.slice(0, -1)) để biết chính xác trạng thái "kỳ trước" app từng hiển
+// thị, rồi so trực tiếp với "hiện tại" — không cần localStorage.
+//
+// Dùng CHUNG 1 hàm cho cả Daily và Weekly — Daily & Weekly giờ là 2 hệ thống
+// ĐỘC LẬP hoàn toàn (không còn yêu cầu 2 khung phải cùng chiều nữa), mỗi khung
+// tự xét: kỳ hiện tại có phải nến ngược chiều trong xu hướng (WR21 vs MA13)
+// của chính khung đó hay không.
 // ============================================================================
-function analyzeSymbol(D, W) {
-  const dInd = buildIndicators(D);
-  const wInd = buildIndicators(W);
-  const { outUp: wUpM, outDown: wDownM } = mapWeeklyToDaily(D, W, wInd.up, wInd.down);
+function analyzeTimeframe(bars) {
+  const ind = buildIndicators(bars);
   const diag = { reason: null, side: null };
-  const cp = getCurrentPullback(D, dInd.up, dInd.down, wUpM, wDownM, diag);
+  const cp = getCurrentPullback(bars, ind.up, ind.down, diag);
   if (!cp) return { cp: null, bt: null, valid: false, diag };
-  const bt = runBacktest(D, dInd.up, dInd.down, wUpM, wDownM, cp.side);
-  // Kiểm tra target NGÀY MAI (vị trí streak trong mảng 0-based) đã bị giá VƯỢT
-  // QUA chưa — so với giá ĐÓNG CỬA hiện tại (lastClose).
-  //
-  // LƯU Ý: trước đây so với extSoFar (mức cao/thấp nhất TỪNG chạm — cộng dồn)
-  // để tránh bug "giá chạm target rồi lùi lại vẫn coi là chưa đạt". NHƯNG sau
-  // khi sửa target80ByDay sang tính RIÊNG TỪNG NGÀY (giảm dần theo ngày, đúng
-  // bản chất thống kê — xem log sửa trước), so extSoFar (một đại lượng CỘNG
-  // DỒN, luôn neo gần mức đỉnh ngay từ ngày 1) với target80ByDay (một đại
-  // lượng RIÊNG TỪNG NGÀY, giảm dần) là SO SÁNH LỆCH CHUẨN — gần như luôn báo
-  // "đã chạm" một cách giả tạo dù mới streak=1, khiến app gần như luôn 0 tín
-  // hiệu. Sửa: quay lại so với giá đóng cửa hiện tại — nhất quán với cách
-  // target80ByDay đang được tính (riêng từng ngày).
-  const nextIdx = cp.streak; // todayIdx (streak-1) + 1
+  const bt = runBacktest(bars, ind.up, ind.down, cp.side);
+  // Kiểm tra target KỲ KẾ TIẾP (vị trí streak trong mảng 0-based) đã bị giá
+  // vượt qua chưa — so với giá đóng cửa hiện tại (lastClose), nhất quán với
+  // cách target80ByDay đang được tính (riêng từng kỳ, không cộng dồn).
+  const nextIdx = cp.streak;
   const nextRatio = nextIdx < NMAX ? bt.target80ByDay[nextIdx] : null;
   let valid = true;
   if (nextRatio !== null) {
@@ -714,9 +643,20 @@ function analyzeSymbol(D, W) {
     const alreadyPassed = cp.side === "long" ? nextPrice <= cp.lastClose : nextPrice >= cp.lastClose;
     valid = !alreadyPassed;
   }
-  if (!valid) diag.reason = "target_passed";
-  else diag.reason = "active";
+  diag.reason = valid ? "active" : "target_passed";
   return { cp, bt, valid, diag };
+}
+
+// Chỉ tính Weekly SAU KHI tuần đã đóng (Thứ 6) — nếu kỳ tuần cuối cùng trong
+// dữ liệu vẫn còn đang hình thành (chưa đủ 6 ngày kể từ ngày nến daily gần
+// nhất), bỏ nó đi, dùng tuần liền trước làm "hiện tại".
+function getCompletedWeeklyBars(D, W) {
+  if (!D.length || !W.length) return W;
+  const lastDailyT = D[D.length - 1].t;
+  const lastWeeklyT = W[W.length - 1].t;
+  const diffDays = (lastDailyT - lastWeeklyT) / (24 * 3600 * 1000);
+  if (diffDays < 6) return W.slice(0, -1);
+  return W;
 }
 
 const REASON_LABEL = {
@@ -728,12 +668,12 @@ const REASON_LABEL = {
 // Nhãn minh bạch trạng thái CỦA TỪNG CẶP, kể cả khi không có tín hiệu — để
 // biết chính xác đang vướng ở bước nào, thay vì chỉ thấy danh sách trống.
 const DIAG_LABEL = {
-  no_trend: "Daily & Weekly chưa cùng chiều",
+  no_trend: "Chưa có xu hướng rõ ràng (WR21 ≈ MA13)",
   pushing: "Đang đẩy sóng (2 nến gần nhất cùng chiều) — chưa hồi",
   no_impulse: "Chưa tìm thấy chuỗi sóng đẩy hợp lệ trong dữ liệu",
-  streak_too_long: "Hồi quá dài (vượt quá 3 ngày)",
+  streak_too_long: "Hồi quá dài (vượt quá 3 kỳ)",
   bad_impulse: "Biên độ sóng đẩy không hợp lệ",
-  target_passed: "Đã đạt/vượt target ngày kế tiếp",
+  target_passed: "Đã đạt/vượt target kỳ kế tiếp",
   active: "Đang hồi hợp lệ",
 };
 
@@ -743,12 +683,16 @@ const DIAG_LABEL = {
 export default function SongDayScreener() {
   const [status, setStatus] = useState("loading"); // loading | ready | error
   const [errMsg, setErrMsg] = useState("");
-  const [items, setItems] = useState([]); // tín hiệu đang active hôm nay
-  const [closedItems, setClosedItems] = useState([]); // từng active hôm qua, hôm nay không còn -> hiển thị mờ
-  const [diagnostics, setDiagnostics] = useState([]); // trạng thái từng cặp (kể cả không tín hiệu) — minh bạch, chống nghi ngờ "lỗi ẩn"
+  const [dailyItems, setDailyItems] = useState([]);
+  const [dailyClosed, setDailyClosed] = useState([]);
+  const [dailyDiag, setDailyDiag] = useState([]);
+  const [weeklyItems, setWeeklyItems] = useState([]);
+  const [weeklyClosed, setWeeklyClosed] = useState([]);
+  const [weeklyDiag, setWeeklyDiag] = useState([]);
   const [showDiag, setShowDiag] = useState(false);
   const [generatedAt, setGeneratedAt] = useState(null);
   const [totalScanned, setTotalScanned] = useState(0);
+  const [timeframe, setTimeframe] = useState("D"); // "D" (Daily) | "W" (Weekly) — 2 hệ thống độc lập
   const [tab, setTab] = useState("Tất cả");
   const [openSym, setOpenSym] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -765,37 +709,49 @@ export default function SongDayScreener() {
         if (!res.ok) throw new Error("HTTP " + res.status);
         const raw = await res.json();
         const symbols = Object.keys(raw.D).filter((s) => !EXCLUDED_SYMBOLS.includes(s));
-        const out = [];
-        const closed = [];
-        const diagList = []; // trạng thái TỪNG cặp, kể cả không có tín hiệu — để minh bạch, không còn "hộp đen"
-        for (const sym of symbols) {
-          const D = raw.D[sym], W = raw.W[sym];
-          if (!D || !W || D.length < 121 || W.length < 60) continue;
 
-          const today = analyzeSymbol(D, W);
-          if (today.cp && today.valid) out.push({ sym, cp: today.cp, bt: today.bt });
-          diagList.push({ sym, side: today.diag.side, reason: today.diag.reason, streak: today.diag.streak ?? today.cp?.streak });
+        // Chạy 2 vòng quét ĐỘC LẬP — Daily và Weekly không còn phụ thuộc nhau.
+        function scanTimeframe(getBars, getPrevBars) {
+          const out = [], closed = [], diagList = [];
+          for (const sym of symbols) {
+            const bars = getBars(sym);
+            if (!bars || bars.length < 121) continue;
+            const cur = analyzeTimeframe(bars);
+            if (cur.cp && cur.valid) out.push({ sym, cp: cur.cp, bt: cur.bt });
+            diagList.push({ sym, side: cur.diag.side, reason: cur.diag.reason, streak: cur.diag.streak ?? cur.cp?.streak });
 
-          // "Hôm qua" = chạy lại ĐÚNG thuật toán trên dữ liệu cắt bớt 1 nến
-          // cuối — không cần lưu trữ gì, tự tính lại được ngay mỗi lần load.
-          const yesterday = analyzeSymbol(D.slice(0, D.length - 1), W);
-          if (yesterday.cp && yesterday.valid) {
-            const stillActiveSameSide = today.cp && today.valid && today.cp.side === yesterday.cp.side;
-            if (!stillActiveSameSide) {
-              let reason;
-              if (today.cp && today.cp.side !== yesterday.cp.side) reason = "flipped";
-              else if (today.cp && today.cp.side === yesterday.cp.side && !today.valid) reason = "tp_reached";
-              else reason = "ended";
-              closed.push({ sym, side: yesterday.cp.side, reason, lastClose: D[D.length - 1].c });
+            const prevBars = getPrevBars(sym, bars);
+            if (!prevBars || prevBars.length < 121) continue;
+            const prev = analyzeTimeframe(prevBars);
+            if (prev.cp && prev.valid) {
+              const stillActiveSameSide = cur.cp && cur.valid && cur.cp.side === prev.cp.side;
+              if (!stillActiveSameSide) {
+                let reason;
+                if (cur.cp && cur.cp.side !== prev.cp.side) reason = "flipped";
+                else if (cur.cp && cur.cp.side === prev.cp.side && !cur.valid) reason = "tp_reached";
+                else reason = "ended";
+                closed.push({ sym, side: prev.cp.side, reason, lastClose: bars[bars.length - 1].c });
+              }
             }
           }
+          out.sort((a, b) => a.cp.streak - b.cp.streak);
+          return { out, closed, diagList };
         }
-        out.sort((a, b) => a.cp.streak - b.cp.streak);
+
+        // "Kỳ trước" = chạy lại ĐÚNG thuật toán trên dữ liệu cắt bớt 1 kỳ cuối
+        // — không cần lưu trữ gì, tự tính lại được ngay mỗi lần load.
+        const daily = scanTimeframe(
+          (sym) => raw.D[sym],
+          (sym, bars) => bars.slice(0, bars.length - 1)
+        );
+        const weekly = scanTimeframe(
+          (sym) => getCompletedWeeklyBars(raw.D[sym], raw.W[sym]),
+          (sym, bars) => bars.slice(0, bars.length - 1)
+        );
 
         if (!cancelled) {
-          setItems(out);
-          setClosedItems(closed);
-          setDiagnostics(diagList);
+          setDailyItems(daily.out); setDailyClosed(daily.closed); setDailyDiag(daily.diagList);
+          setWeeklyItems(weekly.out); setWeeklyClosed(weekly.closed); setWeeklyDiag(weekly.diagList);
           setTotalScanned(symbols.length);
           setGeneratedAt(raw.generatedAt);
           setRawData(raw);
@@ -809,6 +765,11 @@ export default function SongDayScreener() {
     load();
     return () => { cancelled = true; };
   }, [reloadKey]);
+
+  const items = timeframe === "D" ? dailyItems : weeklyItems;
+  const closedItems = timeframe === "D" ? dailyClosed : weeklyClosed;
+  const diagnostics = timeframe === "D" ? dailyDiag : weeklyDiag;
+  const unit = timeframe === "D" ? "ngày" : "tuần";
 
   const counts = useMemo(() => {
     const c = { "Tất cả": items.length };
@@ -868,17 +829,34 @@ export default function SongDayScreener() {
 
           <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 26, fontWeight: 700, letterSpacing: "-0.01em", margin: "6px 0 4px" }}>Sóng Đẩy</h1>
           <p style={{ color: C.textDim, fontSize: 13.5, lineHeight: 1.5, maxWidth: "56ch", margin: 0 }}>
-            Quét <b style={{ color: C.text }}>22 cặp</b> (chính, chéo, phụ, crypto) tìm những cặp đang{" "}
-            <b style={{ color: C.text }}>Daily &amp; Weekly cùng chiều</b> (chỉ cần 1 trong 3 chỉ báo: EMA20/RSI14 vs MA10/Heikin Ashi),{" "}
-            <b style={{ color: C.text }}>nến hiện tại đang hồi ngược</b>, và <b style={{ color: C.text }}>target 80% (2 ngày) vẫn còn ở phía trước giá</b> —
-            rồi tra lại xác
-            suất lịch sử của chính cặp đó: hồi bao sâu, đạt lại target với xác suất 80% trong bao nhiêu ngày.
+            Quét <b style={{ color: C.text }}>18 cặp</b> (chính, chéo, phụ, crypto), xét <b style={{ color: C.text }}>Daily và Weekly ĐỘC LẬP</b> (không cần
+            2 khung cùng chiều nữa) — mỗi khung tự xác định xu hướng bằng <b style={{ color: C.text }}>Williams %R21 so MA13 của chính nó</b>, tìm nến ngược
+            chiều trong xu hướng đó rồi tra lại xác suất lịch sử: hồi bao sâu, đạt lại target với xác suất 80% trong bao nhiêu kỳ.
           </p>
+
+          {/* Toggle Daily / Weekly — 2 hệ thống độc lập hoàn toàn */}
+          {status === "ready" && (
+            <div style={{ display: "flex", gap: 6, marginTop: 14 }}>
+              {[{ k: "D", label: "Daily" }, { k: "W", label: "Weekly" }].map((t) => (
+                <button
+                  key={t.k}
+                  onClick={() => { setTimeframe(t.k); setTab("Tất cả"); setOpenSym(null); }}
+                  style={{
+                    flex: 1, padding: "9px 0", borderRadius: 10, border: `1px solid ${timeframe === t.k ? C.text : C.border}`,
+                    background: timeframe === t.k ? C.text : C.panel, color: timeframe === t.k ? "#0a0d10" : C.textDim,
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+                  }}
+                >
+                  {t.label} <span style={{ opacity: 0.6, fontWeight: 500 }}>({(t.k === "D" ? dailyItems : weeklyItems).length})</span>
+                </button>
+              ))}
+            </div>
+          )}
 
           {status === "ready" && (
             <div style={{ display: "flex", gap: 14, marginTop: 14, flexWrap: "wrap", fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, color: C.textFaint }}>
               <span><b style={{ color: C.textDim }}>{totalScanned}</b> cặp quét</span>
-              <span><b style={{ color: C.textDim }}>{items.length}</b> cặp đang hồi thỏa điều kiện</span>
+              <span><b style={{ color: C.textDim }}>{items.length}</b> cặp đang hồi thỏa điều kiện ({timeframe === "D" ? "Daily" : "Weekly"})</span>
               <span>Nguồn: cache D/W GitHub Action, tự quét lúc 4:10 &amp; 7:10 sáng giờ VN mỗi ngày (Twelve Data)</span>
             </div>
           )}
@@ -925,8 +903,8 @@ export default function SongDayScreener() {
 
         {status === "ready" && items.length === 0 && closedItems.length === 0 && (
           <div style={{ border: `1px dashed ${C.border}`, borderRadius: 14, padding: "32px 20px", textAlign: "center", color: C.textDim, fontSize: 13.5, marginTop: 10 }}>
-            Hiện <b style={{ color: C.text }}>không có cặp nào</b> thỏa điều kiện (Daily &amp; Weekly cùng chiều + đang hồi) lúc này. Quay lại sau — điều kiện
-            được đánh giá lại mỗi lần dữ liệu D/W cập nhật.
+            Hiện <b style={{ color: C.text }}>không có cặp nào</b> đang hồi thỏa điều kiện ({timeframe === "D" ? "Daily" : "Weekly"}) lúc này. Quay lại sau, hoặc
+            thử chuyển sang {timeframe === "D" ? "Weekly" : "Daily"} — điều kiện được đánh giá lại mỗi lần dữ liệu cập nhật.
           </div>
         )}
 
@@ -939,7 +917,7 @@ export default function SongDayScreener() {
                 {c} ({g.active.length}{g.closed.length > 0 ? ` +${g.closed.length} đã đóng` : ""})
               </div>
               {g.active.map((item) => (
-                <PairCard key={item.sym} item={item} open={openSym === item.sym} onToggle={() => setOpenSym(openSym === item.sym ? null : item.sym)} onInfo={setDetailItem} />
+                <PairCard key={item.sym} item={item} unit={unit} open={openSym === item.sym} onToggle={() => setOpenSym(openSym === item.sym ? null : item.sym)} onInfo={setDetailItem} />
               ))}
               {g.closed.map((w) => (
                 <ClosedCard key={w.sym} w={w} />
@@ -990,17 +968,18 @@ export default function SongDayScreener() {
 
         {status === "ready" && (
           <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
-            Phương pháp: Daily &amp; Weekly cùng chiều khi <b>≥1 trong 3</b> chỉ báo (Close so EMA20, RSI14 so MA10 của chính nó, màu nến Heikin Ashi) đồng thuận trên mỗi khung — không cần cả 3 cùng lúc,
-            áp dụng như nhau cho cả Daily và Weekly. "Sóng đẩy" = chuỗi ≥2 nến liên tiếp cùng chiều Weekly; "Hồi" bắt đầu từ nến ngược chiều đầu tiên sau chuỗi đó,
-            <b>chỉ chấp nhận 1-3 ngày</b> — từ 4 ngày trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều. Target 80% = percentile 20 của giá <b>đúng ngày đó</b>
-            (không cộng dồn/running-max) trong lịch sử của chính từng cặp. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.
+            Phương pháp: xu hướng {timeframe === "D" ? "Daily" : "Weekly"} xác định bằng <b>Williams %R(21) so với MA13 của chính nó</b> — WR &gt; MA13 = tăng,
+            WR &lt; MA13 = giảm. Daily và Weekly là <b>2 hệ thống độc lập</b>, không cần khung kia xác nhận (Weekly chỉ tính sau khi tuần đã đóng). "Sóng đẩy"
+            = chuỗi ≥2 nến liên tiếp cùng chiều xu hướng; "Hồi" bắt đầu từ nến ngược chiều đầu tiên sau chuỗi đó, <b>chỉ chấp nhận 1-3 {unit}</b> — từ {unit === "ngày" ? "4 ngày" : "4 tuần"} trở
+            đi loại bỏ hoàn toàn do nguy cơ đảo chiều. Target 80% = percentile 20 của giá <b>đúng kỳ đó</b> (không cộng dồn/running-max) trong lịch sử của
+            chính từng cặp. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.
           </div>
         )}
       </div>
 
       <style>{`@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`}</style>
 
-      {detailItem && <DetailChartModal item={detailItem} rawData={rawData} onClose={() => setDetailItem(null)} />}
+      {detailItem && <DetailChartModal item={detailItem} rawData={rawData} unit={unit} onClose={() => setDetailItem(null)} />}
     </div>
   );
 }

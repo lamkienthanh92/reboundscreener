@@ -1,11 +1,13 @@
-# Sóng Đẩy — Bộ lọc hồi kỹ thuật D+W
+# Sóng Đẩy — Bộ lọc hồi kỹ thuật (Daily / Weekly độc lập)
 
-Apps React (Vite) quét 18 cặp FX/crypto (22 cặp gốc, trừ 4 cặp sàn không hỗ
-trợ: USD/SEK, USD/MXN, USD/ZAR, USD/NOK), lọc ra những cặp đang **Daily &
-Weekly cùng chiều xu hướng** (≥1 trong 3 chỉ báo: EMA20 / RSI14 so MA10 / màu
-nến Heikin Ashi) **và** đang hồi đúng 1-3 ngày kể từ đỉnh/đáy gần nhất — rồi
-backtest lại chính lịch sử của từng cặp đó để trả lời: trong N ngày tới, 80%
-trường hợp trong quá khứ giá đã đạt tới mức nào.
+App React (Vite) quét 18 cặp FX/crypto (22 cặp gốc, trừ 4 cặp sàn không hỗ
+trợ: USD/SEK, USD/MXN, USD/ZAR, USD/NOK). **Daily và Weekly là 2 hệ thống
+hoàn toàn độc lập** (không còn yêu cầu 2 khung phải cùng chiều) — mỗi khung tự
+xác định xu hướng bằng **Williams %R(21) so với MA13 của chính nó**, tìm nến
+ngược chiều trong xu hướng đó (streak 1-3 kỳ), rồi backtest lại chính lịch sử
+của từng cặp để trả lời: trong N kỳ tới, 80% trường hợp quá khứ giá đã đạt
+tới mức nào. Weekly chỉ được tính **sau khi tuần đã đóng** (không dùng nến
+tuần còn đang hình thành).
 
 ## Chạy thử ngay (cách nhanh nhất)
 
@@ -63,35 +65,32 @@ với repo gốc `fx-cmt-app`.
 
 ## Phương pháp tính (tóm tắt)
 
-- **Xu hướng D/W**: chỉ cần **1 trong 3** chỉ báo xác nhận là đủ (không cần
-  cả 3 đồng thuận cùng lúc), áp dụng như nhau cho cả Daily và Weekly:
-  - Close so với EMA20, hoặc
-  - RSI14 so với **MA10 của chính nó** (không dùng mốc 50 cố định — RSI trên/
-    dưới MA10 phản ánh đúng động lượng đang đổi chiều hơn), hoặc
-  - Màu nến **Heikin Ashi** (HA Close > HA Open = tăng) — phản ứng nhanh hơn
-    nhiều so với chờ MACD cắt Signal.
-- **Sóng đẩy**: chuỗi **≥2 nến liên tiếp cùng chiều Weekly** (1 nến ngược
-  màu đơn lẻ xen giữa không tính là chuỗi mới, chỉ là nhiễu). Đáy sóng đẩy mở
-  rộng bao gồm đáy của sóng ngược chiều liền trước (nếu thấp hơn); đỉnh sóng
-  đẩy mở rộng bao gồm đỉnh của nến đảo chiều đầu tiên ngay sau chuỗi (nếu cao
-  hơn — trường hợp wick vượt lên trước khi đóng cửa ngược hướng).
-- **"Hồi"**: số ngày kể từ ngày cuối cùng của chuỗi sóng đẩy đó (nến ngược
-  chiều đầu tiên = ngày 1 của hồi). **Chỉ chấp nhận 1-3 ngày** — từ 4 ngày
-  trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều.
-- **Target 80%**: với mỗi cặp + mỗi chiều Long/Short, gộp **toàn bộ lịch sử**
-  các lần từng khớp đúng mẫu hình này (D+W cùng chiều rồi hồi — thường vài
-  trăm lần trên ~9-10 năm dữ liệu), rồi với mỗi mốc N ngày kể từ lúc bắt đầu
-  hồi (N1…N10), tính percentile thứ 20 của giá **đúng ngày đó** (không cộng dồn/
-  running-max — tránh bị "mắc kẹt" ở mức cao do ngày đầu tiên còn gần đỉnh).
-  Percentile
-  20 tương đương: **80% số lần trong lịch sử, giá đã đạt tới mức này trong N
-  ngày đó** — đúng câu hỏi gốc "trong N ngày, 80% trường hợp giá đạt đến
-  ngưỡng nào". Không tách nhỏ theo mức hồi sâu/nông hiện tại — dùng chung 1
-  con số cho mỗi N, tính trên toàn bộ mẫu, cho chắc cỡ mẫu đủ lớn.
-- **Giá TP thực tế**: mỗi card hiển thị thẳng 3 ô TP80 cho **2 / 3 / 4 ngày**,
-  quy đổi từ % thang sóng đẩy sang **giá cụ thể** (dựa trên đáy/đỉnh sóng đẩy
-  hiện tại của chính cặp đó), không chỉ số % trừu tượng. Bấm vào card để xem
-  đầy đủ N1–N10.
+- **Xu hướng**: chỉ **1 chỉ báo duy nhất** — Williams %R(21) so với MA13 của
+  chính nó. WR &gt; MA13(WR) = tăng, WR &lt; MA13(WR) = giảm. Tính **độc lập**
+  trên Daily và trên Weekly — không còn yêu cầu 2 khung phải cùng chiều.
+- **Daily / Weekly độc lập**: đây là 2 hệ thống tách biệt hoàn toàn, mỗi khung
+  tự chạy toàn bộ pipeline (xu hướng → sóng đẩy → hồi → backtest → TP80) trên
+  chính dữ liệu của khung đó. Weekly chỉ được tính khi tuần đã đóng (kiểm tra
+  qua `getCompletedWeeklyBars` — nếu tuần cuối trong dữ liệu chưa đủ 6 ngày kể
+  từ nến daily gần nhất, bỏ tuần đó, dùng tuần liền trước).
+- **Sóng đẩy**: chuỗi **≥2 nến liên tiếp cùng chiều xu hướng của khung đó**
+  (1 nến ngược màu đơn lẻ xen giữa không tính là chuỗi mới, chỉ là nhiễu). Đáy
+  sóng đẩy mở rộng bao gồm đáy của sóng ngược chiều liền trước (nếu thấp hơn);
+  đỉnh sóng đẩy mở rộng bao gồm đỉnh của nến đảo chiều đầu tiên ngay sau chuỗi
+  (nếu cao hơn — trường hợp wick vượt lên trước khi đóng cửa ngược hướng).
+- **"Hồi"**: số kỳ (ngày hoặc tuần, tùy khung) kể từ kỳ cuối cùng của chuỗi
+  sóng đẩy đó. **Chỉ chấp nhận 1-3 kỳ** — từ kỳ thứ 4 trở đi loại bỏ hoàn toàn
+  do nguy cơ đảo chiều.
+- **Target 80%**: với mỗi cặp + mỗi chiều + mỗi khung, gộp **toàn bộ lịch sử**
+  các lần từng khớp đúng mẫu hình (xu hướng đúng rồi rời sóng đẩy), rồi với
+  mỗi mốc N kỳ kể từ lúc bắt đầu hồi (N1…N20), tính percentile thứ 20 của giá
+  **đúng kỳ đó** (không cộng dồn/running-max — tránh bị "mắc kẹt" ở mức cao do
+  kỳ đầu tiên còn gần đỉnh). Percentile 20 tương đương: **80% số lần trong
+  lịch sử, giá đã đạt tới mức này trong N kỳ đó**.
+- **Giá TP thực tế**: mỗi card hiển thị thẳng 3 ô TP80 cho **+1 / +2 / +3 kỳ**
+  kể từ hiện tại, quy đổi từ % thang sóng đẩy sang **giá cụ thể**. Bấm vào
+  card để xem đầy đủ N1–N20.
+
 - **Lọc target đã lỡ**: tự động ẩn các cặp mà giá hiện tại đã vượt qua TP80
   (2 ngày) rồi — Long thì TP phải cao hơn giá hiện tại, Short thì TP phải
   thấp hơn; nếu không, mục tiêu đã nằm phía sau giá, không còn ý nghĩa để
