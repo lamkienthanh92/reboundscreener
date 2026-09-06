@@ -836,6 +836,7 @@ export default function SongDayScreener() {
   const [weeklyDiag, setWeeklyDiag] = useState([]);
   const [showDiag, setShowDiag] = useState(false);
   const [generatedAt, setGeneratedAt] = useState(null);
+  const [lastDataDate, setLastDataDate] = useState(null); // ngày daily gần nhất THẬT SỰ có trong dữ liệu — để phát hiện dữ liệu nguồn bị trễ
   const [totalScanned, setTotalScanned] = useState(0);
   const [timeframe, setTimeframe] = useState("D"); // "D" (Daily) | "W" (Weekly) — 2 hệ thống độc lập
   const [tab, setTab] = useState("Tất cả");
@@ -904,6 +905,13 @@ export default function SongDayScreener() {
           setWeeklyItems(weekly.out); setWeeklyClosed(weekly.closed); setWeeklyDiag(weekly.diagList);
           setTotalScanned(symbols.length);
           setGeneratedAt(raw.generatedAt);
+          // Ngày daily gần nhất THẬT SỰ có trong dữ liệu (lấy max qua mọi cặp)
+          // — khác với raw.generatedAt (chỉ là giờ SCRIPT chạy, không đảm bảo
+          // Twelve Data trả về dữ liệu mới nhất). Nếu 2 mốc này lệch nhau
+          // nhiều ngày -> dữ liệu nguồn đang bị trễ, không phải lỗi tính toán.
+          let maxT = 0;
+          for (const sym of symbols) { const d = raw.D[sym]; if (d && d.length) maxT = Math.max(maxT, d[d.length - 1].t); }
+          if (maxT > 0) setLastDataDate(new Date(maxT).toISOString().slice(0, 10));
           setRawData(raw);
           setStatus("ready");
         }
@@ -1010,6 +1018,21 @@ export default function SongDayScreener() {
               <span>Nguồn: cache D/W GitHub Action, tự quét lúc 4:10 &amp; 7:10 sáng giờ VN mỗi ngày (Twelve Data)</span>
             </div>
           )}
+          {status === "ready" && lastDataDate && (() => {
+            const todayStr = new Date().toISOString().slice(0, 10);
+            const diffDays = Math.round((new Date(todayStr) - new Date(lastDataDate)) / (24 * 3600 * 1000));
+            const stale = diffDays >= 3; // lệch >=3 ngày -> đáng ngờ, cảnh báo
+            return (
+              <div style={{
+                marginTop: 8, fontFamily: "'JetBrains Mono', monospace", fontSize: 11, padding: "6px 10px", borderRadius: 8,
+                background: stale ? C.amberSoft : C.panel, border: `1px solid ${stale ? C.amber + "55" : C.borderSoft}`,
+                color: stale ? C.amber : C.textFaint, display: "inline-block",
+              }}>
+                {stale ? "⚠ " : ""}Ngày daily gần nhất THẬT SỰ có trong dữ liệu: <b>{lastDataDate}</b>
+                {stale ? ` — trễ ~${diffDays} ngày so với hôm nay (${todayStr}). Có thể nguồn Twelve Data/GitHub Action chưa cập nhật kịp, không phải lỗi tính toán.` : " (mới)"}
+              </div>
+            );
+          })()}
         </header>
 
         {/* tabs */}
