@@ -663,15 +663,29 @@ function analyzeTimeframe(bars) {
   return { cp, bt, valid, diag };
 }
 
-// Chỉ tính Weekly SAU KHI tuần đã đóng (Thứ 6) — nếu kỳ tuần cuối cùng trong
-// dữ liệu vẫn còn đang hình thành (chưa đủ 6 ngày kể từ ngày nến daily gần
-// nhất), bỏ nó đi, dùng tuần liền trước làm "hiện tại".
+// Chỉ tính Weekly SAU KHI tuần đã đóng. So sánh ĐÚNG TUẦN LỊCH (Thứ 2→Chủ
+// nhật, giờ UTC) giữa nến daily gần nhất và nến weekly gần nhất — KHÔNG dùng
+// ngưỡng "chênh lệch ngày cố định" như trước, vì cách đó giả định quy ước
+// ngày giao dịch của FX (nghỉ Thứ 7/CN) và tính SAI cho crypto (giao dịch cả
+// 7 ngày/tuần, ví dụ BTC) — daily cuối của BTC có thể rơi vào Chủ nhật, làm
+// lệch phép tính chênh lệch ngày dù về bản chất vẫn cùng 1 tuần lịch.
+function mondayOfWeekUTC(t) {
+  const d = new Date(t);
+  const day = d.getUTCDay(); // 0=CN, 1=T2, ... 6=T7
+  const diff = (day === 0 ? -6 : 1) - day; // số ngày cần lùi/tiến để về đúng Thứ 2
+  const monday = new Date(d);
+  monday.setUTCDate(d.getUTCDate() + diff);
+  monday.setUTCHours(0, 0, 0, 0);
+  return monday.getTime();
+}
 function getCompletedWeeklyBars(D, W) {
   if (!D.length || !W.length) return W;
-  const lastDailyT = D[D.length - 1].t;
-  const lastWeeklyT = W[W.length - 1].t;
-  const diffDays = (lastDailyT - lastWeeklyT) / (24 * 3600 * 1000);
-  if (diffDays < 6) return W.slice(0, -1);
+  const lastDailyMonday = mondayOfWeekUTC(D[D.length - 1].t);
+  const lastWeeklyMonday = mondayOfWeekUTC(W[W.length - 1].t);
+  // Nến weekly cuối cùng rơi vào ĐÚNG tuần lịch chứa nến daily gần nhất ->
+  // tuần đó chắc chắn còn đang hình thành (vì daily vẫn tiếp tục cập nhật
+  // trong chính tuần đó) -> bỏ, dùng tuần liền trước làm "hiện tại".
+  if (lastWeeklyMonday === lastDailyMonday) return W.slice(0, -1);
   return W;
 }
 
