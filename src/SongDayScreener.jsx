@@ -104,19 +104,20 @@ function pullbackStateAt(D, idx, side, diagOut) {
   // Quét ngược tìm ngày cuối cùng của chuỗi sóng đẩy gần nhất. 2 trường hợp
   // được coi là "kết thúc sóng đẩy":
   //  (a) 2 nến liên tiếp cùng chiều (chuỗi thật sự), HOẶC
-  //  (b) 1 nến ĐƠN LẺ cùng chiều nhưng lập đỉnh/đáy MỚI so với đúng 1 ngày
-  //      liền trước VÀ 1 ngày liền sau (mini-pivot 1 nến) — bắt đúng trường
-  //      hợp 1 nến phá đỉnh rất mạnh nhưng đứng riêng lẻ (không đi kèm nến
-  //      cùng màu trước đó), nếu không sẽ bị bỏ qua, lùi nhầm về 1 chuỗi cũ
-  //      hơn nhiều dù thị trường vừa phá đỉnh/đáy mới rõ ràng.
+  //  (b) 1 nến ĐƠN LẺ cùng chiều, lập đỉnh/đáy MỚI so với đúng 1 kỳ liền
+  //      trước — bắt đúng trường hợp 1 nến phá đỉnh rất mạnh nhưng đứng
+  //      riêng lẻ (không đi kèm nến cùng màu trước đó). CHỈ so với kỳ liền
+  //      trước, KHÔNG so với kỳ liền sau/nhìn lại xa hơn — vì nến hồi ngay
+  //      sau đó (dù màu ngược lại) hoàn toàn có thể có wick vượt qua đỉnh
+  //      này mà vẫn không phủ nhận đây là đỉnh sóng đẩy (đỉnh sẽ tự mở rộng
+  //      hấp thụ wick đó ở bước tính peakVal bên dưới, không dùng để loại bỏ
+  //      ứng viên đỉnh ở bước tìm kiếm này).
   let j = idx;
   while (j >= 1) {
     const twoConsec = matchesSide(D, j, side) && matchesSide(D, j - 1, side);
     let miniPivot = false;
-    if (!twoConsec && matchesSide(D, j, side) && j + 1 <= idx) {
-      miniPivot = side === "long"
-        ? D[j].h > D[j - 1].h && D[j].h > D[j + 1].h
-        : D[j].l < D[j - 1].l && D[j].l < D[j + 1].l;
+    if (!twoConsec && matchesSide(D, j, side) && !matchesSide(D, j - 1, side)) {
+      miniPivot = side === "long" ? D[j].h > D[j - 1].h : D[j].l < D[j - 1].l;
     }
     if (twoConsec || miniPivot) break;
     j--;
