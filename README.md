@@ -71,13 +71,20 @@ với repo gốc `fx-cmt-app`.
   trên Daily và trên Weekly — không còn yêu cầu 2 khung phải cùng chiều.
 - **Daily / Weekly độc lập**: đây là 2 hệ thống tách biệt hoàn toàn, mỗi khung
   tự chạy toàn bộ pipeline (xu hướng → sóng đẩy → hồi → backtest → TP80) trên
-  chính dữ liệu của khung đó. **Xác định tín hiệu** (chiều, đỉnh/đáy, streak)
-  của Weekly LUÔN dựa vào tuần đã đóng thật sự (`getCompletedWeeklyBars` bỏ
-  tuần đang hình thành, so đúng tuần lịch UTC — đúng cho cả FX lẫn crypto
-  giao dịch 7 ngày/tuần). Nhưng **kiểm tra đã đạt TP80 chưa** thì luôn dùng
-  **giá live hiện tại** (giá đóng cửa daily mới nhất), không đợi tuần đóng —
-  vì việc chốt lời/nhận biết đã đạt mục tiêu phải theo giá thực tế ngay bây
-  giờ, tách biệt hoàn toàn với việc xác định tín hiệu.
+  chính dữ liệu của khung đó. **Lọc bỏ nến Thứ 7/Chủ nhật** khỏi dữ liệu daily
+  trước khi phân tích (trừ crypto) — Twelve Data đôi khi vẫn trả về nến cuối
+  tuần cho FX với biên độ gần bằng 0 (giá đứng yên, không phải giao dịch
+  thật), nếu không lọc sẽ làm nhiễu việc xác định màu nến/streak.
+  **Weekly được TỰ DỰNG HOÀN TOÀN TỪ DAILY** (đã lọc cuối tuần)
+  (`buildWeeklyFromDaily`) — không dùng endpoint weekly riêng của Twelve
+  Data nữa, vì endpoint đó từng bị phát hiện ĐỨNG (không cập nhật kịp) trong
+  khi endpoint daily vẫn tươi mỗi ngày. Gộp mọi nến daily theo đúng tuần
+  lịch (Thứ 2→Chủ nhật, UTC) thành nến tuần, đảm bảo Weekly luôn tươi ngang
+  Daily. **Xác định tín hiệu** (chiều, đỉnh/đáy, streak) LUÔN dựa vào tuần
+  đã đóng thật sự (`getCompletedWeeklyBars` bỏ tuần đang hình thành). Nhưng
+  **kiểm tra đã đạt TP80 chưa** thì luôn dùng **giá live hiện tại** (giá
+  đóng cửa daily mới nhất), không đợi tuần đóng — tách biệt hoàn toàn với
+  việc xác định tín hiệu.
 - **Sóng đẩy / N0 (mốc bắt đầu hồi)**: tính bằng **state machine tuần tự**
   (`computeN0Array`), không chỉ nhìn 1-2 kỳ liền kề:
   - Kỳ ngược chiều (đỏ, cho Long): nếu CHƯA có N0, hoặc đợt hồi trước đó ĐÃ

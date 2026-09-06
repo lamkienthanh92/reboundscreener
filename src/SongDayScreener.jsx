@@ -23,6 +23,24 @@ const CAT_ORDER = ["Chính", "Chéo", "Phụ", "Crypto/Hàng hóa"];
 // (dùng đúng định dạng "XXX/YYY" như trong CATEGORY ở trên).
 const EXCLUDED_SYMBOLS = ["USD/SEK", "USD/MXN", "USD/ZAR", "USD/NOK"];
 
+// Các cặp giao dịch THẬT SỰ cả Thứ 7/CN (crypto) — không lọc cuối tuần cho
+// nhóm này. Mọi cặp khác (FX truyền thống) không giao dịch cuối tuần thật,
+// nên nến Thứ 7/CN (nếu Twelve Data trả về) chỉ là giá đứng yên/giả, cần bỏ.
+const WEEKEND_TRADING_SYMBOLS = ["BTC/USD"];
+
+// Lọc bỏ nến Thứ 7 (6) / Chủ nhật (0) theo giờ UTC khỏi dữ liệu daily — Twelve
+// Data đôi khi vẫn trả về nến cuối tuần cho FX với biên độ gần như bằng 0
+// (giá đứng yên, không phải giao dịch thật), nếu không lọc sẽ làm nhiễu việc
+// xác định màu nến/streak (VD 1 nến cuối tuần đi ngang có thể vô tình đổi
+// màu và làm lệch mốc N0).
+function filterWeekendBars(D, sym) {
+  if (WEEKEND_TRADING_SYMBOLS.includes(sym)) return D;
+  return D.filter((b) => {
+    const day = new Date(b.t).getUTCDay(); // 0=CN, 6=T7
+    return day !== 0 && day !== 6;
+  });
+}
+
 const NMAX = 20; // đủ dài để cover các đợt hồi kéo dài nhiều ngày
 
 // ============================================================================
@@ -521,7 +539,8 @@ function IndicatorBadge({ label, valueText, matches }) {
 function DetailChartModal({ item, rawData, unit, onClose }) {
   if (!item || !rawData) return null;
   const { sym, cp, bt } = item;
-  const bars = unit === "ngày" ? rawData.D[sym] : getCompletedWeeklyBars(rawData.D[sym], rawData.W[sym]);
+  const dailyFiltered = filterWeekendBars(rawData.D[sym], sym);
+  const bars = unit === "ngày" ? dailyFiltered : getCompletedWeeklyBars(dailyFiltered);
 
   const full = computeFullIndicators(bars);
   const NBARS = unit === "ngày" ? 45 : 30;
@@ -531,7 +550,7 @@ function DetailChartModal({ item, rawData, unit, onClose }) {
   const close = bars[li].c, wrV = full.wr[li], wrMaV = full.wrMa[li];
   // Giá LIVE hiện tại (khác với `close` = giá đóng cửa của KỲ ĐÃ ĐÓNG dùng để
   // xác định tín hiệu) — với Weekly, đây là giá đóng cửa daily mới nhất.
-  const livePrice = unit === "ngày" ? close : rawData.D[sym][rawData.D[sym].length - 1].c;
+  const livePrice = unit === "ngày" ? close : dailyFiltered[dailyFiltered.length - 1].c;
 
   const hasCp = !!cp;
   const sideColor = hasCp ? (cp.side === "long" ? C.long : C.short) : C.textFaint;
@@ -770,10 +789,14 @@ function analyzeTimeframe(bars, livePrice) {
 }
 
 // XÁC ĐỊNH TÍN HIỆU (chiều, đỉnh/đáy, streak) phải dựa vào NẾN TUẦN ĐÃ ĐÓNG
-// THẬT SỰ — không dùng tuần đang hình thành (tuần đang hình thành không phải
-// là 1 "nến" theo đúng nghĩa, OHLC của nó còn thay đổi mỗi ngày). So sánh
-// ĐÚNG TUẦN LỊCH (Thứ 2→Chủ nhật, UTC) giữa nến daily gần nhất và nến weekly
-// gần nhất, thay vì ngưỡng ngày cố định (sai với crypto giao dịch 7 ngày/tuần).
+// THẬT SỰ — không dùng tuần đang hình thành. So sánh ĐÚNG TUẦN LỊCH (Thứ 2→
+// Chủ nhật, UTC).
+//
+// QUAN TRỌNG: endpoint weekly riêng của Twelve Data (raw.W) từng bị phát hiện
+// ĐỨNG (không cập nhật kịp) trong khi endpoint daily (raw.D) vẫn tươi mỗi
+// ngày. Vì vậy KHÔNG dùng raw.W nữa — tự dựng nến tuần hoàn toàn từ raw.D
+// (đã xác nhận luôn cập nhật đúng lịch), đảm bảo Weekly luôn tươi ngang bằng
+// Daily, không phụ thuộc endpoint weekly riêng có trễ hay không.
 function mondayOfWeekUTC(t) {
   const d = new Date(t);
   const day = d.getUTCDay(); // 0=CN, 1=T2, ... 6=T7
@@ -783,12 +806,49 @@ function mondayOfWeekUTC(t) {
   monday.setUTCHours(0, 0, 0, 0);
   return monday.getTime();
 }
-function getCompletedWeeklyBars(D, W) {
+// Gộp toàn bộ daily thành các nến tuần (Thứ 2 → Chủ nhật, UTC) — tuần cuối
+// cùng trả về có thể còn đang hình thành (sẽ bị cắt bởi getCompletedWeeklyBars).
+function buildWeeklyFromDaily(D) {
+  const weeks = [];
+  let curMonday = null, curBars = [];
+  for (const b of D) {
+    const wk = mondayOfWeekUTC(b.t);
+    if (curMonday === null || wk !== curMonday) {
+      if (curBars.length) {
+        weeks.push({
+          t: curBars[0].t,
+          d: curBars[curBars.length - 1].d,
+          o: curBars[0].o,
+          h: Math.max(...curBars.map((x) => x.h)),
+          l: Math.min(...curBars.map((x) => x.l)),
+          c: curBars[curBars.length - 1].c,
+        });
+      }
+      curMonday = wk;
+      curBars = [b];
+    } else {
+      curBars.push(b);
+    }
+  }
+  if (curBars.length) {
+    weeks.push({
+      t: curBars[0].t,
+      d: curBars[curBars.length - 1].d,
+      o: curBars[0].o,
+      h: Math.max(...curBars.map((x) => x.h)),
+      l: Math.min(...curBars.map((x) => x.l)),
+      c: curBars[curBars.length - 1].c,
+    });
+  }
+  return weeks;
+}
+function getCompletedWeeklyBars(D) {
+  const W = buildWeeklyFromDaily(D);
   if (!D.length || !W.length) return W;
   const curWeekMonday = mondayOfWeekUTC(D[D.length - 1].t);
   const lastWeeklyMonday = mondayOfWeekUTC(W[W.length - 1].t);
-  // Nến weekly cuối rơi vào ĐÚNG tuần lịch chứa nến daily gần nhất -> tuần đó
-  // còn đang hình thành (chưa đóng) -> bỏ, dùng tuần liền trước làm "hiện tại".
+  // Tuần cuối rơi vào ĐÚNG tuần lịch chứa nến daily gần nhất -> tuần đó còn
+  // đang hình thành (chưa đóng) -> bỏ, dùng tuần liền trước làm "hiện tại".
   if (lastWeeklyMonday === curWeekMonday) return W.slice(0, -1);
   return W;
 }
@@ -890,14 +950,20 @@ export default function SongDayScreener() {
 
         // "Kỳ trước" = chạy lại ĐÚNG thuật toán trên dữ liệu cắt bớt 1 kỳ cuối
         // — không cần lưu trữ gì, tự tính lại được ngay mỗi lần load.
+        // Lọc bỏ nến Thứ 7/CN (giá đứng yên, không phải giao dịch thật, trừ
+        // crypto) TRƯỚC khi đưa vào bất kỳ tính toán nào — 1 lần duy nhất,
+        // dùng lại cho cả Daily lẫn Weekly-tự-dựng.
+        const filteredD = {};
+        for (const sym of symbols) filteredD[sym] = filterWeekendBars(raw.D[sym], sym);
+
         const daily = scanTimeframe(
-          (sym) => raw.D[sym],
+          (sym) => filteredD[sym],
           (sym, bars) => bars.slice(0, bars.length - 1)
         );
         const weekly = scanTimeframe(
-          (sym) => getCompletedWeeklyBars(raw.D[sym], raw.W[sym]),
+          (sym) => getCompletedWeeklyBars(filteredD[sym]),
           (sym, bars) => bars.slice(0, bars.length - 1),
-          (sym) => raw.D[sym][raw.D[sym].length - 1].c
+          (sym) => filteredD[sym][filteredD[sym].length - 1].c
         );
 
         if (!cancelled) {
@@ -910,7 +976,7 @@ export default function SongDayScreener() {
           // Twelve Data trả về dữ liệu mới nhất). Nếu 2 mốc này lệch nhau
           // nhiều ngày -> dữ liệu nguồn đang bị trễ, không phải lỗi tính toán.
           let maxT = 0;
-          for (const sym of symbols) { const d = raw.D[sym]; if (d && d.length) maxT = Math.max(maxT, d[d.length - 1].t); }
+          for (const sym of symbols) { const d = filteredD[sym]; if (d && d.length) maxT = Math.max(maxT, d[d.length - 1].t); }
           if (maxT > 0) setLastDataDate(new Date(maxT).toISOString().slice(0, 10));
           setRawData(raw);
           setStatus("ready");
