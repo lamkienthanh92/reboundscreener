@@ -86,48 +86,63 @@ function percentile(arr, p) {
 // - Đỉnh sóng đẩy: cao nhất trong chuỗi, MỞ RỘNG bao gồm đỉnh của nến đảo
 //   chiều đầu tiên ngay sau chuỗi (nếu cao hơn — trường hợp nến đảo chiều có
 //   wick vượt qua chuỗi trước khi đóng cửa ngược hướng).
-// "streak" = số ngày kể từ ngày cuối cùng của chuỗi sóng đẩy đó.
+// "streak" = số kỳ kể từ mốc N0 (xem computeN0Array bên dưới).
 // ============================================================================
-const MAX_STREAK = 3; // chỉ chấp nhận hồi 1-3 ngày; từ 4 ngày trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều
+const MAX_STREAK = 3; // chỉ chấp nhận hồi 1-3 kỳ; từ 4 kỳ trở đi loại bỏ hoàn toàn do nguy cơ đảo chiều
 
 function matchesSide(D, i, side) {
   return side === "long" ? D[i].c > D[i].o : D[i].c < D[i].o;
 }
 
-function pullbackStateAt(D, idx, side, diagOut) {
+// ============================================================================
+// N0 — mốc "bắt đầu hồi" — tính bằng STATE MACHINE tuần tự (không phải chỉ
+// nhìn 1 kỳ liền kề):
+//  - Kỳ NGƯỢC chiều (đỏ, cho Long): nếu CHƯA có N0, hoặc đợt hồi trước đó ĐÃ
+//    từng có kỳ hồi phục (hasRecovered=true) rồi giờ lại giảm tiếp -> RESET,
+//    N0 = kỳ này, coi đây là 1 TRƯỜNG HỢP MỚI HOÀN TOÀN (bỏ mốc cũ). Nếu vẫn
+//    đang trong chuỗi đỏ liên tục ban đầu (chưa từng hồi lên lần nào) -> GIỮ
+//    NGUYÊN N0 cũ (không reset, vẫn là cùng 1 đợt giảm ban đầu).
+//  - Kỳ CÙNG chiều (xanh): nếu đã có N0 -> đánh dấu hasRecovered=true (ghi
+//    nhận đã có nỗ lực hồi phục, dùng để quyết định có reset ở kỳ đỏ tiếp
+//    theo hay không). Việc kỳ xanh đó đã chạm TP80 hay chưa được xét riêng ở
+//    bước "valid" (analyzeTimeframe), không ảnh hưởng đến việc tính N0 ở đây.
+// Tính 1 LẦN DUY NHẤT cho cả mảng (forward pass) để tra cứu O(1) — quan
+// trọng vì backtest gọi hàm này cho MỌI kỳ trong lịch sử.
+// ============================================================================
+function computeN0Array(D, side) {
+  const n = D.length;
+  const n0 = new Array(n).fill(null);
+  let curN0 = null;
+  let hasRecovered = false;
+  for (let i = 1; i < n; i++) {
+    if (!matchesSide(D, i, side)) {
+      if (curN0 === null || hasRecovered) { curN0 = i; hasRecovered = false; }
+    } else {
+      if (curN0 !== null) hasRecovered = true;
+    }
+    n0[i] = curN0;
+  }
+  return n0;
+}
+
+function pullbackStateAt(D, idx, side, n0Array, diagOut) {
   // Hôm nay + hôm qua đều cùng chiều -> đang trong sóng đẩy, chưa hồi.
   if (matchesSide(D, idx, side) && idx > 0 && matchesSide(D, idx - 1, side)) {
     if (diagOut) diagOut.reason = "pushing";
     return null;
   }
 
-  // Quét ngược tìm ngày cuối cùng của chuỗi sóng đẩy gần nhất. 2 trường hợp
-  // được coi là "kết thúc sóng đẩy":
-  //  (a) 2 nến liên tiếp cùng chiều (chuỗi thật sự), HOẶC
-  //  (b) 1 nến ĐƠN LẺ cùng chiều, lập đỉnh/đáy MỚI so với đúng 1 kỳ liền
-  //      trước — bắt đúng trường hợp 1 nến phá đỉnh rất mạnh nhưng đứng
-  //      riêng lẻ (không đi kèm nến cùng màu trước đó). CHỈ so với kỳ liền
-  //      trước, KHÔNG so với kỳ liền sau/nhìn lại xa hơn — vì nến hồi ngay
-  //      sau đó (dù màu ngược lại) hoàn toàn có thể có wick vượt qua đỉnh
-  //      này mà vẫn không phủ nhận đây là đỉnh sóng đẩy (đỉnh sẽ tự mở rộng
-  //      hấp thụ wick đó ở bước tính peakVal bên dưới, không dùng để loại bỏ
-  //      ứng viên đỉnh ở bước tìm kiếm này).
-  let j = idx;
-  while (j >= 1) {
-    const twoConsec = matchesSide(D, j, side) && matchesSide(D, j - 1, side);
-    let miniPivot = false;
-    if (!twoConsec && matchesSide(D, j, side) && !matchesSide(D, j - 1, side)) {
-      miniPivot = side === "long" ? D[j].h > D[j - 1].h : D[j].l < D[j - 1].l;
-    }
-    if (twoConsec || miniPivot) break;
-    j--;
-  }
-  if (j < 1) {
+  const curN0 = n0Array[idx];
+  if (curN0 === null || curN0 === undefined) {
     if (diagOut) diagOut.reason = "no_impulse";
     return null;
   }
-  const impulseEndIdx = j;
-  const streak = idx - impulseEndIdx;
+  const peakIdx = curN0 - 1;
+  if (peakIdx < 0) {
+    if (diagOut) diagOut.reason = "no_impulse";
+    return null;
+  }
+  const streak = idx - curN0 + 1;
   if (streak < 1) {
     if (diagOut) diagOut.reason = "no_impulse";
     return null;
@@ -137,14 +152,12 @@ function pullbackStateAt(D, idx, side, diagOut) {
     return null;
   }
 
-  // Mở rộng lùi để lấy trọn chuỗi (tìm điểm bắt đầu chuỗi) — nếu impulseEnd
-  // được xác định bằng mini-pivot (1 nến đơn lẻ), impulseStartIdx = impulseEndIdx
-  // luôn (chuỗi chỉ có 1 nến), vì nến trước đó đã KHÁC chiều (điều kiện mini-pivot).
-  let impulseStartIdx = impulseEndIdx;
+  // Mở rộng lùi để lấy trọn chuỗi cùng chiều ngay trước N0 (tìm điểm bắt đầu chuỗi).
+  let impulseStartIdx = peakIdx;
   while (impulseStartIdx - 1 >= 0 && matchesSide(D, impulseStartIdx - 1, side)) impulseStartIdx--;
 
   let impulseLow = Infinity, impulseHigh = -Infinity;
-  for (let i = impulseStartIdx; i <= impulseEndIdx; i++) { impulseLow = Math.min(impulseLow, D[i].l); impulseHigh = Math.max(impulseHigh, D[i].h); }
+  for (let i = impulseStartIdx; i <= peakIdx; i++) { impulseLow = Math.min(impulseLow, D[i].l); impulseHigh = Math.max(impulseHigh, D[i].h); }
 
   // Đáy: mở rộng bao gồm đáy của sóng ngược chiều liền trước impulseStartIdx (nếu thấp hơn).
   let base = impulseLow;
@@ -157,9 +170,10 @@ function pullbackStateAt(D, idx, side, diagOut) {
     base = Math.min(base, prevWaveLow);
   }
 
-  // Đỉnh: mở rộng bao gồm đỉnh của nến đảo chiều đầu tiên (nếu cao hơn).
-  const firstReversalIdx = impulseEndIdx + 1;
-  const peakVal = Math.max(impulseHigh, D[firstReversalIdx].h);
+  // Đỉnh: mở rộng bao gồm đỉnh của kỳ N0 (nến đảo chiều đầu tiên của đợt này)
+  // nếu cao hơn — kể cả khi N0 tự nó là kỳ giảm/hồi (wick có thể vượt đỉnh
+  // trước khi đóng cửa thấp hơn, vẫn tính là đỉnh mới).
+  const peakVal = Math.max(impulseHigh, D[curN0].h);
 
   const impulse = peakVal - base;
   if (impulse <= 0) {
@@ -168,14 +182,14 @@ function pullbackStateAt(D, idx, side, diagOut) {
   }
 
   let curMin = Infinity, curMax = -Infinity;
-  for (let i = firstReversalIdx; i <= idx; i++) { curMin = Math.min(curMin, D[i].l); curMax = Math.max(curMax, D[i].h); }
+  for (let i = curN0; i <= idx; i++) { curMin = Math.min(curMin, D[i].l); curMax = Math.max(curMax, D[i].h); }
   const retr = (peakVal - curMin) / impulse;
   // extSoFar = mức mở rộng CAO NHẤT giá đã từng chạm tới (không chỉ giá đóng
   // cửa hôm nay) kể từ khi hồi bắt đầu — dùng để biết target đã bị "chạm"
   // thật chưa, kể cả khi giá đã lùi lại sau khi chạm.
   const extSoFar = (curMax - base) / impulse;
 
-  return { side, streak, retr, extSoFar, impulse, base, peakVal, peakIdx: impulseEndIdx };
+  return { side, streak, retr, extSoFar, impulse, base, peakVal, peakIdx };
 }
 
 function getCurrentPullback(bars, up, down, diagOut) {
@@ -187,7 +201,8 @@ function getCurrentPullback(bars, up, down, diagOut) {
   else if (down[last]) side = "short";
   if (!side) { if (diagOut) diagOut.reason = "no_trend"; return null; }
   if (diagOut) diagOut.side = side;
-  const st = pullbackStateAt(bars, last, side, diagOut);
+  const n0Array = computeN0Array(bars, side);
+  const st = pullbackStateAt(bars, last, side, n0Array, diagOut);
   if (!st) return null;
   return { ...st, entryDate: bars[st.peakIdx + 1].d, lastDate: bars[last].d, lastClose: bars[last].c };
 }
@@ -199,13 +214,14 @@ function getCurrentPullback(bars, up, down, diagOut) {
 // trí hiện tại. Dùng chung cho cả Daily và Weekly (chỉ khác mảng bars truyền vào).
 // ============================================================================
 function runBacktest(bars, up, down, side) {
+  const n0Array = computeN0Array(bars, side); // tính 1 lần, tra cứu O(1) cho mọi kỳ
   const extByDayRows = [];
   for (let i = 60; i < bars.length; i++) {
     // Candidate: chỉ báo (WR21 vs MA13) xác nhận đúng chiều tại kỳ i — độc lập
     // trên khung đang xét, không cần khung kia xác nhận.
     if (side === "long") { if (!up[i]) continue; }
     else { if (!down[i]) continue; }
-    const st = pullbackStateAt(bars, i, side);
+    const st = pullbackStateAt(bars, i, side, n0Array);
     if (!st || st.streak !== 1) continue; // chỉ lấy kỳ đầu tiên rời sóng đẩy
     if (i + NMAX - 1 >= bars.length) continue;
 

@@ -78,16 +78,20 @@ với repo gốc `fx-cmt-app`.
   **giá live hiện tại** (giá đóng cửa daily mới nhất), không đợi tuần đóng —
   vì việc chốt lời/nhận biết đã đạt mục tiêu phải theo giá thực tế ngay bây
   giờ, tách biệt hoàn toàn với việc xác định tín hiệu.
-- **Sóng đẩy**: kết thúc tại kỳ cuối cùng thỏa 1 trong 2: (a) **2 nến liên
-  tiếp cùng chiều** xu hướng của khung đó (chuỗi thật sự — 1 nến ngược màu
-  đơn lẻ xen giữa không tính là chuỗi mới, chỉ là nhiễu), HOẶC (b) **1 nến
-  đơn lẻ lập đỉnh/đáy mới so với đúng 1 kỳ liền trước** (không so với kỳ liền
-  sau, không nhìn lại xa hơn) — bắt đúng trường hợp 1 nến phá đỉnh/đáy rất
-  mạnh nhưng đứng riêng lẻ. Đáy sóng đẩy mở rộng bao gồm đáy của sóng ngược
-  chiều liền trước (nếu thấp hơn); đỉnh sóng đẩy **luôn** mở rộng bao gồm
-  đỉnh của nến đảo chiều đầu tiên ngay sau chuỗi nếu cao hơn — kể cả khi nến
-  đó tự nó là nến giảm/hồi (giá vẫn có thể xác lập đỉnh mới bằng wick trước
-  khi đóng cửa thấp hơn).
+- **Sóng đẩy / N0 (mốc bắt đầu hồi)**: tính bằng **state machine tuần tự**
+  (`computeN0Array`), không chỉ nhìn 1-2 kỳ liền kề:
+  - Kỳ ngược chiều (đỏ, cho Long): nếu CHƯA có N0, hoặc đợt hồi trước đó ĐÃ
+    từng có kỳ hồi phục rồi giờ lại giảm tiếp → **RESET**, N0 = kỳ này (coi
+    là 1 trường hợp mới hoàn toàn, bỏ mốc cũ). Nếu vẫn đang trong chuỗi đỏ
+    liên tục ban đầu (chưa từng hồi lên lần nào) → giữ nguyên N0 cũ.
+  - Kỳ cùng chiều (xanh): đánh dấu "đã từng hồi phục" — dùng để quyết định
+    có reset ở kỳ đỏ tiếp theo hay không. Việc kỳ xanh đó đã chạm TP80 chưa
+    được xét riêng ở bước "valid", không ảnh hưởng tới N0 ở đây.
+
+  Đáy sóng đẩy mở rộng bao gồm đáy của sóng ngược chiều liền trước N0 (nếu
+  thấp hơn); đỉnh sóng đẩy **luôn** mở rộng bao gồm đỉnh của chính kỳ N0 nếu
+  cao hơn — kể cả khi N0 tự nó là kỳ giảm/hồi (giá vẫn có thể xác lập đỉnh
+  mới bằng wick trước khi đóng cửa thấp hơn).
 - **"Hồi"**: số kỳ (ngày hoặc tuần, tùy khung) kể từ kỳ cuối cùng của chuỗi
   sóng đẩy đó. **Chỉ chấp nhận 1-3 kỳ** — từ kỳ thứ 4 trở đi loại bỏ hoàn toàn
   do nguy cơ đảo chiều.
