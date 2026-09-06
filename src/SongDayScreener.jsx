@@ -352,7 +352,7 @@ function PairCard({ item, unit, open, onToggle, onInfo }) {
       <ImpulseScale retr={cp.retr} side={cp.side} />
 
       <div style={{ fontSize: 10, color: C.textFaint, marginTop: 2 }}>
-        Giá đóng cửa gần nhất: <b style={{ color: C.textDim }}>{fmtPrice(cp.lastClose, sym)}</b> · dựa trên{" "}
+        Giá hiện tại: <b style={{ color: C.textDim }}>{fmtPrice(cp.livePrice, sym)}</b> · dựa trên{" "}
         <b style={{ color: C.textDim }}>{bt.n}</b> lần mẫu hình này từng xảy ra trong lịch sử {sym}
       </div>
 
@@ -512,6 +512,9 @@ function DetailChartModal({ item, rawData, unit, onClose }) {
 
   const li = bars.length - 1;
   const close = bars[li].c, wrV = full.wr[li], wrMaV = full.wrMa[li];
+  // Giá LIVE hiện tại (khác với `close` = giá đóng cửa của KỲ ĐÃ ĐÓNG dùng để
+  // xác định tín hiệu) — với Weekly, đây là giá đóng cửa daily mới nhất.
+  const livePrice = unit === "ngày" ? close : rawData.D[sym][rawData.D[sym].length - 1].c;
 
   const hasCp = !!cp;
   const sideColor = hasCp ? (cp.side === "long" ? C.long : C.short) : C.textFaint;
@@ -538,9 +541,17 @@ function DetailChartModal({ item, rawData, unit, onClose }) {
     }
   }
 
-  // 10 kỳ gần nhất, ghi rõ ngày + màu nến — để tự dò tay khi nghi ngờ số liệu
-  // (đối chiếu trực tiếp với chart TradingView của bạn).
-  const last10 = bars.slice(-10).map((b) => ({ d: b.d, up: b.c >= b.o }));
+  // Chạy TRỰC TIẾP đúng thuật toán ngay tại đây, độc lập với item.cp (item.cp
+  // có thể null nếu cặp không active) — để in ra chính xác kết quả thật của
+  // pullbackStateAt ngay lúc này, không cần đoán qua màu nến/pixel trên chart.
+  const liveInd = buildIndicators(bars);
+  const liveDiag = { reason: null, side: null };
+  const liveCp = getCurrentPullback(bars, liveInd.up, liveInd.down, liveDiag);
+
+  // 10 kỳ gần nhất, ghi rõ ngày + OHLC CHÍNH XÁC (không chỉ màu nến) — để tự
+  // dò tay khi nghi ngờ số liệu, đối chiếu trực tiếp với chart TradingView.
+  const dec = priceDecimals(sym);
+  const last10 = bars.slice(-10).map((b, i, arr) => ({ d: b.d, o: b.o, h: b.h, l: b.l, c: b.c, up: b.c >= b.o }));
 
   return (
     <div
@@ -575,14 +586,14 @@ function DetailChartModal({ item, rawData, unit, onClose }) {
             <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
               Sóng đẩy: <b style={{ color: C.text }}>{fmtPrice(cp.base, sym)}</b> ({baseLabel}) → <b style={{ color: C.text }}>{fmtPrice(cp.peakVal, sym)}</b> ({peakLabel}),
               đỉnh/đáy {unit === "ngày" ? "ngày" : "tuần"} <b style={{ color: C.text }}>{bars[cp.peakIdx].d}</b>. Đang hồi <b style={{ color: C.amber }}>{cp.streak} {unit}</b>, đã chạm{" "}
-              <b style={{ color: C.amber }}>{fmtPct(cp.retr)}</b> biên độ. Giá đóng cửa gần nhất <b style={{ color: C.text }}>{fmtPrice(close, sym)}</b>.
+              <b style={{ color: C.amber }}>{fmtPct(cp.retr)}</b> biên độ. Giá hiện tại <b style={{ color: C.text }}>{fmtPrice(livePrice, sym)}</b> (giá đóng cửa kỳ dùng để xác định tín hiệu: {fmtPrice(close, sym)}).
             </div>
           </div>
         ) : (
           <div style={{ background: C.amberSoft, border: `1px solid ${C.amber}55`, borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
             <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
               Cặp này hiện <b style={{ color: C.amber }}>không active</b> (không có sóng đẩy để vẽ đè lên chart) — chỉ hiện chart thô + chỉ báo để tự đối
-              chiếu. Giá đóng cửa gần nhất <b style={{ color: C.text }}>{fmtPrice(close, sym)}</b>, kỳ gần nhất trong dữ liệu:{" "}
+              chiếu. Giá hiện tại <b style={{ color: C.text }}>{fmtPrice(livePrice, sym)}</b>, kỳ đã đóng gần nhất trong dữ liệu:{" "}
               <b style={{ color: C.text }}>{bars[li].d}</b>.
             </div>
           </div>
@@ -601,21 +612,52 @@ function DetailChartModal({ item, rawData, unit, onClose }) {
           </div>
         </div>
 
-        {/* 10 kỳ gần nhất kèm ngày + màu — để tự dò tay, đối chiếu với TradingView */}
+        {/* Chạy trực tiếp thuật toán ngay bây giờ — in thẳng kết quả, không đoán */}
+        <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+            Kết quả thuật toán (tính lại ngay bây giờ)
+          </div>
+          <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.7 }}>
+            Chiều xác định: <b style={{ color: liveDiag.side === "long" ? C.long : liveDiag.side === "short" ? C.short : C.textFaint }}>{liveDiag.side ? liveDiag.side.toUpperCase() : "không có xu hướng"}</b><br />
+            {liveCp ? (
+              <>
+                Đỉnh/đáy sóng đẩy tìm thấy tại: <b style={{ color: C.text }}>{bars[liveCp.peakIdx].d}</b> (giá {fmtPrice(liveCp.peakVal, sym)})<br />
+                Streak: <b style={{ color: C.amber }}>{liveCp.streak}</b> {unit} · Đáy/đỉnh hồi chạm: <b style={{ color: C.amber }}>{fmtPct(liveCp.retr)}</b><br />
+                Kết luận: <b style={{ color: C.long }}>{DIAG_LABEL["active"]}</b> (còn tùy đã đạt target chưa để hiện ở danh sách chính)
+              </>
+            ) : (
+              <>Kết luận: <b style={{ color: C.amber }}>{DIAG_LABEL[liveDiag.reason] || liveDiag.reason || "không xác định"}</b>{liveDiag.streak ? ` (streak thật = ${liveDiag.streak})` : ""}</>
+            )}
+          </div>
+        </div>
+
+        {/* 10 kỳ gần nhất kèm ngày + OHLC CHÍNH XÁC — để tự dò tay, đối chiếu với TradingView */}
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
-            10 {unit} gần nhất (để đối chiếu tay)
+            10 {unit} gần nhất — OHLC chính xác (để đối chiếu tay)
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-            {last10.map((b, i) => (
-              <div key={i} style={{
-                fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, padding: "3px 6px", borderRadius: 5,
-                background: b.up ? C.longSoft : C.shortSoft, color: b.up ? C.long : C.short,
-              }}>
-                {b.d} {b.up ? "▲" : "▼"}
-              </div>
-            ))}
-          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5 }}>
+            <thead>
+              <tr>
+                <th style={{ ...thStyle, textAlign: "left" }}>Ngày</th>
+                <th style={thStyle}>Open</th>
+                <th style={thStyle}>High</th>
+                <th style={thStyle}>Low</th>
+                <th style={thStyle}>Close</th>
+              </tr>
+            </thead>
+            <tbody>
+              {last10.map((b, i) => (
+                <tr key={i} style={{ background: b.up ? C.longSoft : C.shortSoft }}>
+                  <td style={{ ...tdStyleLeft, color: b.up ? C.long : C.short }}>{b.d} {b.up ? "▲" : "▼"}</td>
+                  <td style={tdStyle}>{b.o.toFixed(dec)}</td>
+                  <td style={tdStyle}>{b.h.toFixed(dec)}</td>
+                  <td style={tdStyle}>{b.l.toFixed(dec)}</td>
+                  <td style={tdStyle}>{b.c.toFixed(dec)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
 
         <p style={{ fontSize: 11, color: C.textFaint, lineHeight: 1.55, marginTop: 4 }}>
@@ -685,33 +727,36 @@ function StatBox({ k, v }) {
 // tự xét: kỳ hiện tại có phải nến ngược chiều trong xu hướng (WR21 vs MA13)
 // của chính khung đó hay không.
 // ============================================================================
-function analyzeTimeframe(bars) {
+function analyzeTimeframe(bars, livePrice) {
   const ind = buildIndicators(bars);
   const diag = { reason: null, side: null };
   const cp = getCurrentPullback(bars, ind.up, ind.down, diag);
   if (!cp) return { cp: null, bt: null, valid: false, diag };
   const bt = runBacktest(bars, ind.up, ind.down, cp.side);
-  // Kiểm tra target KỲ KẾ TIẾP (vị trí streak trong mảng 0-based) đã bị giá
-  // vượt qua chưa — so với giá đóng cửa hiện tại (lastClose), nhất quán với
-  // cách target80ByDay đang được tính (riêng từng kỳ, không cộng dồn).
+  // Giá dùng để kiểm tra "đã chạm target chưa": LUÔN dùng giá LIVE hiện tại
+  // (livePrice, thường lấy từ daily gần nhất) chứ không phải giá đóng cửa của
+  // chính kỳ đó — với Weekly, kỳ dùng để xác định TÍN HIỆU (side/streak/đỉnh)
+  // là tuần ĐÃ ĐÓNG, nhưng việc "đã đạt TP chưa" phải theo giá THỰC TẾ ngay
+  // bây giờ, không đợi tuần đóng mới biết. Với Daily, livePrice = lastClose
+  // (không khác gì, vì daily vốn đã là "hiện tại").
+  cp.livePrice = livePrice !== undefined && livePrice !== null ? livePrice : cp.lastClose;
   const nextIdx = cp.streak;
   const nextRatio = nextIdx < NMAX ? bt.target80ByDay[nextIdx] : null;
   let valid = true;
   if (nextRatio !== null) {
     const nextPrice = ratioToPrice(nextRatio, cp);
-    const alreadyPassed = cp.side === "long" ? nextPrice <= cp.lastClose : nextPrice >= cp.lastClose;
+    const alreadyPassed = cp.side === "long" ? nextPrice <= cp.livePrice : nextPrice >= cp.livePrice;
     valid = !alreadyPassed;
   }
   diag.reason = valid ? "active" : "target_passed";
   return { cp, bt, valid, diag };
 }
 
-// Chỉ tính Weekly SAU KHI tuần đã đóng. So sánh ĐÚNG TUẦN LỊCH (Thứ 2→Chủ
-// nhật, giờ UTC) giữa nến daily gần nhất và nến weekly gần nhất — KHÔNG dùng
-// ngưỡng "chênh lệch ngày cố định" như trước, vì cách đó giả định quy ước
-// ngày giao dịch của FX (nghỉ Thứ 7/CN) và tính SAI cho crypto (giao dịch cả
-// 7 ngày/tuần, ví dụ BTC) — daily cuối của BTC có thể rơi vào Chủ nhật, làm
-// lệch phép tính chênh lệch ngày dù về bản chất vẫn cùng 1 tuần lịch.
+// XÁC ĐỊNH TÍN HIỆU (chiều, đỉnh/đáy, streak) phải dựa vào NẾN TUẦN ĐÃ ĐÓNG
+// THẬT SỰ — không dùng tuần đang hình thành (tuần đang hình thành không phải
+// là 1 "nến" theo đúng nghĩa, OHLC của nó còn thay đổi mỗi ngày). So sánh
+// ĐÚNG TUẦN LỊCH (Thứ 2→Chủ nhật, UTC) giữa nến daily gần nhất và nến weekly
+// gần nhất, thay vì ngưỡng ngày cố định (sai với crypto giao dịch 7 ngày/tuần).
 function mondayOfWeekUTC(t) {
   const d = new Date(t);
   const day = d.getUTCDay(); // 0=CN, 1=T2, ... 6=T7
@@ -723,12 +768,11 @@ function mondayOfWeekUTC(t) {
 }
 function getCompletedWeeklyBars(D, W) {
   if (!D.length || !W.length) return W;
-  const lastDailyMonday = mondayOfWeekUTC(D[D.length - 1].t);
+  const curWeekMonday = mondayOfWeekUTC(D[D.length - 1].t);
   const lastWeeklyMonday = mondayOfWeekUTC(W[W.length - 1].t);
-  // Nến weekly cuối cùng rơi vào ĐÚNG tuần lịch chứa nến daily gần nhất ->
-  // tuần đó chắc chắn còn đang hình thành (vì daily vẫn tiếp tục cập nhật
-  // trong chính tuần đó) -> bỏ, dùng tuần liền trước làm "hiện tại".
-  if (lastWeeklyMonday === lastDailyMonday) return W.slice(0, -1);
+  // Nến weekly cuối rơi vào ĐÚNG tuần lịch chứa nến daily gần nhất -> tuần đó
+  // còn đang hình thành (chưa đóng) -> bỏ, dùng tuần liền trước làm "hiện tại".
+  if (lastWeeklyMonday === curWeekMonday) return W.slice(0, -1);
   return W;
 }
 
@@ -795,12 +839,16 @@ export default function SongDayScreener() {
         const symbols = Object.keys(raw.D).filter((s) => !EXCLUDED_SYMBOLS.includes(s));
 
         // Chạy 2 vòng quét ĐỘC LẬP — Daily và Weekly không còn phụ thuộc nhau.
-        function scanTimeframe(getBars, getPrevBars) {
+        // getLivePrice: giá THỰC TẾ ngay bây giờ dùng để kiểm tra "đã đạt TP
+        // chưa" — với Weekly, đây là giá đóng cửa DAILY mới nhất (không phải
+        // giá đóng cửa của tuần đã đóng dùng để xác định tín hiệu).
+        function scanTimeframe(getBars, getPrevBars, getLivePrice) {
           const out = [], closed = [], diagList = [];
           for (const sym of symbols) {
             const bars = getBars(sym);
             if (!bars || bars.length < 121) continue;
-            const cur = analyzeTimeframe(bars);
+            const livePrice = getLivePrice ? getLivePrice(sym) : undefined;
+            const cur = analyzeTimeframe(bars, livePrice);
             if (cur.cp && cur.valid) out.push({ sym, cp: cur.cp, bt: cur.bt });
             diagList.push({ sym, side: cur.diag.side, reason: cur.diag.reason, streak: cur.diag.streak ?? cur.cp?.streak });
 
@@ -830,7 +878,8 @@ export default function SongDayScreener() {
         );
         const weekly = scanTimeframe(
           (sym) => getCompletedWeeklyBars(raw.D[sym], raw.W[sym]),
-          (sym, bars) => bars.slice(0, bars.length - 1)
+          (sym, bars) => bars.slice(0, bars.length - 1),
+          (sym) => raw.D[sym][raw.D[sym].length - 1].c
         );
 
         if (!cancelled) {
@@ -1064,7 +1113,8 @@ export default function SongDayScreener() {
         {status === "ready" && (
           <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.borderSoft}`, fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
             Phương pháp: xu hướng {timeframe === "D" ? "Daily" : "Weekly"} xác định bằng <b>Williams %R(21) so với MA13 của chính nó</b> — WR &gt; MA13 = tăng,
-            WR &lt; MA13 = giảm. Daily và Weekly là <b>2 hệ thống độc lập</b>, không cần khung kia xác nhận (Weekly chỉ tính sau khi tuần đã đóng). "Sóng đẩy"
+            WR &lt; MA13 = giảm. Daily và Weekly là <b>2 hệ thống độc lập</b>, không cần khung kia xác nhận. Tuần hiện tại luôn được cập nhật <b>sống</b> (gộp
+            trực tiếp từ các nến daily trong tuần, không đợi Twelve Data trả nến tuần). "Sóng đẩy"
             = chuỗi ≥2 nến liên tiếp cùng chiều xu hướng; "Hồi" bắt đầu từ nến ngược chiều đầu tiên sau chuỗi đó, <b>chỉ chấp nhận 1-3 {unit}</b> — từ {unit === "ngày" ? "4 ngày" : "4 tuần"} trở
             đi loại bỏ hoàn toàn do nguy cơ đảo chiều. Target 80% = percentile 20 của giá <b>đúng kỳ đó</b> (không cộng dồn/running-max) trong lịch sử của
             chính từng cặp. Đây là thống kê mô tả quá khứ, không phải khuyến nghị đầu tư.

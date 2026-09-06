@@ -6,8 +6,9 @@ hoàn toàn độc lập** (không còn yêu cầu 2 khung phải cùng chiều)
 xác định xu hướng bằng **Williams %R(21) so với MA13 của chính nó**, tìm nến
 ngược chiều trong xu hướng đó (streak 1-3 kỳ), rồi backtest lại chính lịch sử
 của từng cặp để trả lời: trong N kỳ tới, 80% trường hợp quá khứ giá đã đạt
-tới mức nào. Weekly chỉ được tính **sau khi tuần đã đóng** (không dùng nến
-tuần còn đang hình thành).
+tới mức nào. Tín hiệu Weekly luôn dựa vào **tuần đã đóng thật sự** (không
+dùng tuần đang hình thành), nhưng việc **kiểm tra đã đạt TP80 chưa** thì
+dùng giá live hiện tại — tách biệt 2 việc theo đúng nguyên tắc giao dịch.
 
 ## Chạy thử ngay (cách nhanh nhất)
 
@@ -70,9 +71,13 @@ với repo gốc `fx-cmt-app`.
   trên Daily và trên Weekly — không còn yêu cầu 2 khung phải cùng chiều.
 - **Daily / Weekly độc lập**: đây là 2 hệ thống tách biệt hoàn toàn, mỗi khung
   tự chạy toàn bộ pipeline (xu hướng → sóng đẩy → hồi → backtest → TP80) trên
-  chính dữ liệu của khung đó. Weekly chỉ được tính khi tuần đã đóng (kiểm tra
-  qua `getCompletedWeeklyBars` — nếu tuần cuối trong dữ liệu chưa đủ 6 ngày kể
-  từ nến daily gần nhất, bỏ tuần đó, dùng tuần liền trước).
+  chính dữ liệu của khung đó. **Xác định tín hiệu** (chiều, đỉnh/đáy, streak)
+  của Weekly LUÔN dựa vào tuần đã đóng thật sự (`getCompletedWeeklyBars` bỏ
+  tuần đang hình thành, so đúng tuần lịch UTC — đúng cho cả FX lẫn crypto
+  giao dịch 7 ngày/tuần). Nhưng **kiểm tra đã đạt TP80 chưa** thì luôn dùng
+  **giá live hiện tại** (giá đóng cửa daily mới nhất), không đợi tuần đóng —
+  vì việc chốt lời/nhận biết đã đạt mục tiêu phải theo giá thực tế ngay bây
+  giờ, tách biệt hoàn toàn với việc xác định tín hiệu.
 - **Sóng đẩy**: kết thúc tại ngày/tuần cuối cùng thỏa 1 trong 2: (a) **2 nến
   liên tiếp cùng chiều** xu hướng của khung đó (chuỗi thật sự — 1 nến ngược
   màu đơn lẻ xen giữa không tính là chuỗi mới, chỉ là nhiễu), HOẶC (b) **1 nến
