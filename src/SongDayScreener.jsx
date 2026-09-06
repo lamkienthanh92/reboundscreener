@@ -101,10 +101,24 @@ function pullbackStateAt(D, idx, side, diagOut) {
     return null;
   }
 
-  // Quét ngược tìm ngày cuối cùng của chuỗi sóng đẩy gần nhất (2 nến liên tiếp cùng chiều).
+  // Quét ngược tìm ngày cuối cùng của chuỗi sóng đẩy gần nhất. 2 trường hợp
+  // được coi là "kết thúc sóng đẩy":
+  //  (a) 2 nến liên tiếp cùng chiều (chuỗi thật sự), HOẶC
+  //  (b) 1 nến ĐƠN LẺ cùng chiều nhưng lập đỉnh/đáy MỚI so với đúng 1 ngày
+  //      liền trước VÀ 1 ngày liền sau (mini-pivot 1 nến) — bắt đúng trường
+  //      hợp 1 nến phá đỉnh rất mạnh nhưng đứng riêng lẻ (không đi kèm nến
+  //      cùng màu trước đó), nếu không sẽ bị bỏ qua, lùi nhầm về 1 chuỗi cũ
+  //      hơn nhiều dù thị trường vừa phá đỉnh/đáy mới rõ ràng.
   let j = idx;
   while (j >= 1) {
-    if (matchesSide(D, j, side) && matchesSide(D, j - 1, side)) break;
+    const twoConsec = matchesSide(D, j, side) && matchesSide(D, j - 1, side);
+    let miniPivot = false;
+    if (!twoConsec && matchesSide(D, j, side) && j + 1 <= idx) {
+      miniPivot = side === "long"
+        ? D[j].h > D[j - 1].h && D[j].h > D[j + 1].h
+        : D[j].l < D[j - 1].l && D[j].l < D[j + 1].l;
+    }
+    if (twoConsec || miniPivot) break;
     j--;
   }
   if (j < 1) {
@@ -122,7 +136,9 @@ function pullbackStateAt(D, idx, side, diagOut) {
     return null;
   }
 
-  // Mở rộng lùi để lấy trọn chuỗi (tìm điểm bắt đầu chuỗi).
+  // Mở rộng lùi để lấy trọn chuỗi (tìm điểm bắt đầu chuỗi) — nếu impulseEnd
+  // được xác định bằng mini-pivot (1 nến đơn lẻ), impulseStartIdx = impulseEndIdx
+  // luôn (chuỗi chỉ có 1 nến), vì nến trước đó đã KHÁC chiều (điều kiện mini-pivot).
   let impulseStartIdx = impulseEndIdx;
   while (impulseStartIdx - 1 >= 0 && matchesSide(D, impulseStartIdx - 1, side)) impulseStartIdx--;
 

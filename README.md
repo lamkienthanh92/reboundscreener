@@ -73,11 +73,14 @@ với repo gốc `fx-cmt-app`.
   chính dữ liệu của khung đó. Weekly chỉ được tính khi tuần đã đóng (kiểm tra
   qua `getCompletedWeeklyBars` — nếu tuần cuối trong dữ liệu chưa đủ 6 ngày kể
   từ nến daily gần nhất, bỏ tuần đó, dùng tuần liền trước).
-- **Sóng đẩy**: chuỗi **≥2 nến liên tiếp cùng chiều xu hướng của khung đó**
-  (1 nến ngược màu đơn lẻ xen giữa không tính là chuỗi mới, chỉ là nhiễu). Đáy
-  sóng đẩy mở rộng bao gồm đáy của sóng ngược chiều liền trước (nếu thấp hơn);
-  đỉnh sóng đẩy mở rộng bao gồm đỉnh của nến đảo chiều đầu tiên ngay sau chuỗi
-  (nếu cao hơn — trường hợp wick vượt lên trước khi đóng cửa ngược hướng).
+- **Sóng đẩy**: kết thúc tại ngày/tuần cuối cùng thỏa 1 trong 2: (a) **2 nến
+  liên tiếp cùng chiều** xu hướng của khung đó (chuỗi thật sự — 1 nến ngược
+  màu đơn lẻ xen giữa không tính là chuỗi mới, chỉ là nhiễu), HOẶC (b) **1 nến
+  đơn lẻ lập đỉnh/đáy mới** so với đúng 1 kỳ liền trước và 1 kỳ liền sau
+  (mini-pivot) — bắt đúng trường hợp 1 nến phá đỉnh/đáy rất mạnh nhưng đứng
+  riêng lẻ, không đi kèm nến cùng màu ngay trước đó. Đáy sóng đẩy mở rộng bao
+  gồm đáy của sóng ngược chiều liền trước (nếu thấp hơn); đỉnh sóng đẩy mở
+  rộng bao gồm đỉnh của nến đảo chiều đầu tiên ngay sau chuỗi (nếu cao hơn).
 - **"Hồi"**: số kỳ (ngày hoặc tuần, tùy khung) kể từ kỳ cuối cùng của chuỗi
   sóng đẩy đó. **Chỉ chấp nhận 1-3 kỳ** — từ kỳ thứ 4 trở đi loại bỏ hoàn toàn
   do nguy cơ đảo chiều.
