@@ -513,23 +513,34 @@ function DetailChartModal({ item, rawData, unit, onClose }) {
   const li = bars.length - 1;
   const close = bars[li].c, wrV = full.wr[li], wrMaV = full.wrMa[li];
 
-  const sideColor = cp.side === "long" ? C.long : C.short;
-  const todayIdx = cp.streak - 1;
+  const hasCp = !!cp;
+  const sideColor = hasCp ? (cp.side === "long" ? C.long : C.short) : C.textFaint;
 
   // Đường tham chiếu vẽ đè lên chart: đáy/đỉnh sóng đẩy (gốc so sánh) + 3 mức
-  // TP80 (+1/+2/+3 kỳ kể từ hiện tại) — đúng những gì card đang hiển thị.
-  const baseLabel = cp.side === "long" ? "đáy sóng đẩy" : "đỉnh sóng đẩy";
-  const peakLabel = cp.side === "long" ? "đỉnh (đang hồi từ đây)" : "đáy (đang hồi từ đây)";
-  const refLines = [
-    { value: cp.base, color: C.textFaint, label: `0% ${baseLabel}`, dash: true },
-    { value: cp.peakVal, color: C.amber, label: `100% ${peakLabel}`, dash: true },
-  ];
-  for (const off of [1, 2, 3]) {
-    const idx = todayIdx + off;
-    const ratio = idx < NMAX ? bt.target80ByDay[idx] : null;
-    if (ratio === null) continue;
-    refLines.push({ value: ratioToPrice(ratio, cp), color: sideColor, label: `TP +${off}${unit === "ngày" ? "d" : "w"}`, dash: false });
+  // TP80 (+1/+2/+3 kỳ kể từ hiện tại) — chỉ vẽ được khi có cp/bt (cặp đang
+  // active). Với cặp không active (đang đẩy sóng / hồi quá dài...), vẫn hiện
+  // chart thô + chỉ báo để tự kiểm chứng, không có sóng đẩy để vẽ đè lên.
+  let refLines = [];
+  let baseLabel, peakLabel;
+  if (hasCp) {
+    const todayIdx = cp.streak - 1;
+    baseLabel = cp.side === "long" ? "đáy sóng đẩy" : "đỉnh sóng đẩy";
+    peakLabel = cp.side === "long" ? "đỉnh (đang hồi từ đây)" : "đáy (đang hồi từ đây)";
+    refLines = [
+      { value: cp.base, color: C.textFaint, label: `0% ${baseLabel}`, dash: true },
+      { value: cp.peakVal, color: C.amber, label: `100% ${peakLabel}`, dash: true },
+    ];
+    for (const off of [1, 2, 3]) {
+      const idx = todayIdx + off;
+      const ratio = idx < NMAX ? bt.target80ByDay[idx] : null;
+      if (ratio === null) continue;
+      refLines.push({ value: ratioToPrice(ratio, cp), color: sideColor, label: `TP +${off}${unit === "ngày" ? "d" : "w"}`, dash: false });
+    }
   }
+
+  // 10 kỳ gần nhất, ghi rõ ngày + màu nến — để tự dò tay khi nghi ngờ số liệu
+  // (đối chiếu trực tiếp với chart TradingView của bạn).
+  const last10 = bars.slice(-10).map((b) => ({ d: b.d, up: b.c >= b.o }));
 
   return (
     <div
@@ -546,9 +557,11 @@ function DetailChartModal({ item, rawData, unit, onClose }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 17 }}>{sym}</span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, fontWeight: 700, padding: "2.5px 7px", borderRadius: 5, background: cp.side === "long" ? C.longSoft : C.shortSoft, color: sideColor }}>
-              {cp.side === "long" ? "LONG" : "SHORT"}
-            </span>
+            {hasCp && (
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, fontWeight: 700, padding: "2.5px 7px", borderRadius: 5, background: cp.side === "long" ? C.longSoft : C.shortSoft, color: sideColor }}>
+                {cp.side === "long" ? "LONG" : "SHORT"}
+              </span>
+            )}
             <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: C.textFaint, border: `1px solid ${C.borderSoft}`, borderRadius: 5, padding: "2px 6px" }}>
               {unit === "ngày" ? "DAILY" : "WEEKLY"}
             </span>
@@ -556,18 +569,28 @@ function DetailChartModal({ item, rawData, unit, onClose }) {
           <button onClick={onClose} style={{ background: "none", border: "none", color: C.textFaint, fontSize: 20, cursor: "pointer", lineHeight: 1 }}>×</button>
         </div>
 
-        {/* Tóm tắt sóng đẩy hiện tại */}
-        <div style={{ background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
-          <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
-            Sóng đẩy: <b style={{ color: C.text }}>{fmtPrice(cp.base, sym)}</b> ({baseLabel}) → <b style={{ color: C.text }}>{fmtPrice(cp.peakVal, sym)}</b> ({peakLabel}),
-            đỉnh/đáy {unit === "ngày" ? "ngày" : "tuần"} <b style={{ color: C.text }}>{bars[cp.peakIdx].d}</b>. Đang hồi <b style={{ color: C.amber }}>{cp.streak} {unit}</b>, đã chạm{" "}
-            <b style={{ color: C.amber }}>{fmtPct(cp.retr)}</b> biên độ. Giá đóng cửa gần nhất <b style={{ color: C.text }}>{fmtPrice(close, sym)}</b>.
+        {/* Tóm tắt sóng đẩy hiện tại (chỉ có nếu cặp đang active) */}
+        {hasCp ? (
+          <div style={{ background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
+              Sóng đẩy: <b style={{ color: C.text }}>{fmtPrice(cp.base, sym)}</b> ({baseLabel}) → <b style={{ color: C.text }}>{fmtPrice(cp.peakVal, sym)}</b> ({peakLabel}),
+              đỉnh/đáy {unit === "ngày" ? "ngày" : "tuần"} <b style={{ color: C.text }}>{bars[cp.peakIdx].d}</b>. Đang hồi <b style={{ color: C.amber }}>{cp.streak} {unit}</b>, đã chạm{" "}
+              <b style={{ color: C.amber }}>{fmtPct(cp.retr)}</b> biên độ. Giá đóng cửa gần nhất <b style={{ color: C.text }}>{fmtPrice(close, sym)}</b>.
+            </div>
           </div>
-        </div>
+        ) : (
+          <div style={{ background: C.amberSoft, border: `1px solid ${C.amber}55`, borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
+              Cặp này hiện <b style={{ color: C.amber }}>không active</b> (không có sóng đẩy để vẽ đè lên chart) — chỉ hiện chart thô + chỉ báo để tự đối
+              chiếu. Giá đóng cửa gần nhất <b style={{ color: C.text }}>{fmtPrice(close, sym)}</b>, kỳ gần nhất trong dữ liệu:{" "}
+              <b style={{ color: C.text }}>{bars[li].d}</b>.
+            </div>
+          </div>
+        )}
 
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 12 }}>
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
-            {unit === "ngày" ? "Daily" : "Weekly"} ({NBARS} {unit} gần nhất) — có vẽ sóng đẩy + TP
+            {unit === "ngày" ? "Daily" : "Weekly"} ({NBARS} {unit} gần nhất){hasCp ? " — có vẽ sóng đẩy + TP" : ""}
           </div>
           <div style={{ background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 10, padding: "6px 4px 2px" }}>
             <MiniCandleChart bars={slice} ema20={slice.map(() => null)} refLines={refLines} height={190} />
@@ -578,10 +601,30 @@ function DetailChartModal({ item, rawData, unit, onClose }) {
           </div>
         </div>
 
+        {/* 10 kỳ gần nhất kèm ngày + màu — để tự dò tay, đối chiếu với TradingView */}
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+            10 {unit} gần nhất (để đối chiếu tay)
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+            {last10.map((b, i) => (
+              <div key={i} style={{
+                fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, padding: "3px 6px", borderRadius: 5,
+                background: b.up ? C.longSoft : C.shortSoft, color: b.up ? C.long : C.short,
+              }}>
+                {b.d} {b.up ? "▲" : "▼"}
+              </div>
+            ))}
+          </div>
+        </div>
+
         <p style={{ fontSize: 11, color: C.textFaint, lineHeight: 1.55, marginTop: 4 }}>
           App xác định xu hướng {unit === "ngày" ? "Daily" : "Weekly"} bằng <b style={{ color: C.textDim }}>1 chỉ báo duy nhất</b>: Williams %R(21) so với
-          MA13 của chính nó. Daily và Weekly là <b style={{ color: C.textDim }}>2 hệ thống độc lập</b>, không cần khung kia xác nhận. Đường xám chấm chấm =
-          đáy/đỉnh sóng đẩy (0%/100%), đường màu {cp.side === "long" ? "xanh" : "đỏ"} liền nét = các mức TP80 tương ứng thẻ "+1/+2/+3 {unit}" trên card.
+          MA13 của chính nó. Daily và Weekly là <b style={{ color: C.textDim }}>2 hệ thống độc lập</b>, không cần khung kia xác nhận.
+          {hasCp && (
+            <> Đường xám chấm chấm = đáy/đỉnh sóng đẩy (0%/100%), đường màu {cp.side === "long" ? "xanh" : "đỏ"} liền nét = các mức TP80 tương ứng thẻ
+            "+1/+2/+3 {unit}" trên card.</>
+          )}
         </p>
       </div>
     </div>
@@ -706,6 +749,17 @@ const DIAG_LABEL = {
   target_passed: "Đã đạt/vượt target kỳ kế tiếp",
   active: "Đang hồi hợp lệ",
 };
+
+// Bấm vào 1 dòng trong bảng chẩn đoán -> mở modal xem chart. Nếu cặp đó đang
+// active (có trong danh sách card), dùng đúng item đầy đủ (có cp/bt, vẽ được
+// sóng đẩy + TP). Nếu không (đang đẩy sóng / hồi quá dài / đã đạt target...),
+// vẫn cho xem CHART THÔ (nến + Williams %R21 vs MA13) để tự kiểm chứng, dù
+// không có sóng đẩy để vẽ đè lên.
+function diagToDetailItem(d, items) {
+  const found = items.find((x) => x.sym === d.sym);
+  if (found) return found;
+  return { sym: d.sym, cp: null, bt: null };
+}
 
 // ============================================================================
 // MAIN APP
@@ -973,6 +1027,7 @@ export default function SongDayScreener() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, marginTop: 8 }}>
                 <thead>
                   <tr>
+                    <th style={thStyle}></th>
                     <th style={thStyle}>Cặp</th>
                     <th style={thStyle}>Chiều</th>
                     <th style={thStyle}>Streak</th>
@@ -981,7 +1036,17 @@ export default function SongDayScreener() {
                 </thead>
                 <tbody>
                   {diagnostics.map((d) => (
-                    <tr key={d.sym} style={{ background: d.reason === "active" ? C.longSoft : "transparent" }}>
+                    <tr
+                      key={d.sym}
+                      onClick={() => setDetailItem(diagToDetailItem(d, items))}
+                      style={{ background: d.reason === "active" ? C.longSoft : "transparent", cursor: "pointer" }}
+                    >
+                      <td style={{ ...tdStyle, width: 20 }}>
+                        <span style={{
+                          display: "inline-flex", width: 15, height: 15, borderRadius: "50%", border: `1px solid ${C.textFaint}`,
+                          alignItems: "center", justifyContent: "center", fontSize: 9, color: C.textFaint,
+                        }}>!</span>
+                      </td>
                       <td style={tdStyleLeft}>{d.sym}</td>
                       <td style={{ ...tdStyle, color: d.side === "long" ? C.long : d.side === "short" ? C.short : C.textFaint }}>{d.side ? d.side.toUpperCase() : "—"}</td>
                       <td style={tdStyle}>{d.streak ?? "—"}</td>
